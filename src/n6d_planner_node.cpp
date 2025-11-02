@@ -1,3 +1,7 @@
+// n6d_planner_node.cpp
+//
+// ROS 2 node that computes 3D collision-free paths with an A* search on an OctoMap.
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -23,18 +27,23 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 
 namespace {
-using KeyId = std::uint64_t;
-constexpr char kMarkerNamespace[] = "n6d_planner";
+// Alias used for hashing OcTree keys inside the search containers.
+using key_id_t = std::uint64_t;
+// Namespace string shared by every marker the planner publishes for RViz.
+constexpr char k_marker_namespace[] = "n6d_planner";
 
-KeyId keyToId(const octomap::OcTreeKey& key) {
-    return (static_cast<KeyId>(key.k[0]) << 32) | (static_cast<KeyId>(key.k[1]) << 16) |
-           static_cast<KeyId>(key.k[2]);
+// Convert an OcTree key into a dense 64-bit identifier for hashable storage.
+key_id_t key_to_id(const octomap::OcTreeKey& key) {
+    return (static_cast<key_id_t>(key.k[0]) << 32) | (static_cast<key_id_t>(key.k[1]) << 16) |
+           static_cast<key_id_t>(key.k[2]);
 }
 
-octomap::point3d keyToCoord(const octomap::OcTree& tree, const octomap::OcTreeKey& key) {
+// Convenience wrapper to get the 3D world coordinate associated with an OcTree key.
+octomap::point3d key_to_coord(const octomap::OcTree& tree, const octomap::OcTreeKey& key) {
     return tree.keyToCoord(key);
 }
 
+// Euclidean distance helper between two OctoMap points.
 double euclidean(const octomap::point3d& a, const octomap::point3d& b) {
     const double dx = static_cast<double>(a.x() - b.x());
     const double dy = static_cast<double>(a.y() - b.y());
@@ -42,34 +51,41 @@ double euclidean(const octomap::point3d& a, const octomap::point3d& b) {
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-double squaredDistance(const octomap::point3d& a, const octomap::point3d& b) {
+// Squared Euclidean distance, used to avoid redundant square roots in comparisons.
+double squared_distance(const octomap::point3d& a, const octomap::point3d& b) {
     const double dx = static_cast<double>(a.x() - b.x());
     const double dy = static_cast<double>(a.y() - b.y());
     const double dz = static_cast<double>(a.z() - b.z());
     return dx * dx + dy * dy + dz * dz;
 }
 
+// Bookkeeping entry stored in the A* priority queue.
 struct QueueEntry {
-    KeyId id{};
+    key_id_t id{};
     double f_cost{};
 };
+
+// Comparator that turns the STL priority queue into a min-heap on `f_cost`.
 struct QueueCompare {
     bool operator()(const QueueEntry& a, const QueueEntry& b) const { return a.f_cost > b.f_cost; }
 };
 }  // namespace
 
+// ROS 2 node that hosts the nav6d A*-based local planner.
 class N6dPlanner : public rclcpp::Node {
    public:
+    // Declare parameters, wire subscriptions/publishers, and announce readiness.
     N6dPlanner() : rclcpp::Node("n6d_planner") {
+        // Parameters with defaults
         const std::string map_topic = declare_parameter<std::string>("map_topic", "/octomap_full");
         const std::string pose_topic =
             declare_parameter<std::string>("pose_topic", "/space_cobot/pose");
-        const std::string goal_topic =
-            declare_parameter<std::string>("goal_topic", "/space_cobot/goal");
+        const std::string goal_topic = declare_parameter<std::string>("goal_topic", "/nav6d/goal");
         const std::string path_topic =
-            declare_parameter<std::string>("path_topic", "/space_cobot/planner/path");
-        map_frame_ = declare_parameter<std::string>("map_frame", "map");
+            declare_parameter<std::string>("path_topic", "/nav6d/planner/path");
 
+        // Planner parameters
+        map_frame_ = declare_parameter<std::string>("map_frame", "map");
         robot_radius_ = declare_parameter("robot_radius", 0.35);
         occupancy_threshold_ = declare_parameter("occupancy_threshold", 0.5);
         max_search_range_ = declare_parameter("max_search_range", 15.0);
@@ -77,7 +93,7 @@ class N6dPlanner : public rclcpp::Node {
         line_sample_step_ = declare_parameter("line_sample_step", 0.25);
         debug_markers_ = declare_parameter("debug_markers", true);
         marker_topic_ =
-            declare_parameter<std::string>("marker_topic", "/space_cobot/planner/path_markers");
+            declare_parameter<std::string>("marker_topic", "/nav6d/planner/path_markers");
 
         if (line_sample_step_ <= 0.0) {
             RCLCPP_WARN(
@@ -86,18 +102,18 @@ class N6dPlanner : public rclcpp::Node {
             line_sample_step_ = 0.0;
         }
 
+        // Subscriptions
         map_sub_ = create_subscription<octomap_msgs::msg::Octomap>(
             map_topic, rclcpp::QoS(1).transient_local(),
-            std::bind(&N6dPlanner::mapCallback, this, std::placeholders::_1));
-
+            std::bind(&N6dPlanner::map_callback, this, std::placeholders::_1));
         pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
             pose_topic, rclcpp::SensorDataQoS(),
-            std::bind(&N6dPlanner::poseCallback, this, std::placeholders::_1));
-
+            std::bind(&N6dPlanner::pose_callback, this, std::placeholders::_1));
         goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
             goal_topic, rclcpp::QoS(rclcpp::KeepLast(5)).reliable(),
-            std::bind(&N6dPlanner::goalCallback, this, std::placeholders::_1));
+            std::bind(&N6dPlanner::goal_callback, this, std::placeholders::_1));
 
+        // Publishers
         path_pub_ = create_publisher<nav_msgs::msg::Path>(path_topic, 10);
         if (debug_markers_) {
             marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(marker_topic_, 10);
@@ -112,19 +128,22 @@ class N6dPlanner : public rclcpp::Node {
 
    private:
     // --- Subscriptions ---
-    void mapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg) {
+    // Cache incoming OctoMap updates and trigger re-planning when idle.
+    void map_callback(const octomap_msgs::msg::Octomap::SharedPtr msg) {
         if (planning_in_progress_) {
             deferred_octomap_msg_ = msg;  // apply after current plan finishes
             return;
         }
-        updateOctomapFromMessage(msg);
+        update_octomap_from_message(msg);
     }
 
-    void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+    // Track the robot pose; planning is triggered only when both pose and goal are available.
+    void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         current_pose_ = *msg;  // store latest; does NOT trigger planning
     }
 
-    void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+    // Receive user goals and kick off the planner if the system is idle.
+    void goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         pending_goal_ = *msg;  // always keep the latest requested goal
         RCLCPP_INFO(get_logger(), "New goal received: (%.2f, %.2f, %.2f).", msg->pose.position.x,
                     msg->pose.position.y, msg->pose.position.z);
@@ -133,11 +152,13 @@ class N6dPlanner : public rclcpp::Node {
             RCLCPP_INFO(get_logger(), "Planning in progress; this goal will run next.");
             return;
         }
-        planLatestGoal();  // trigger immediately
+        plan_latest_goal();  // trigger immediately
     }
 
     // --- Planning orchestration (goal-triggered only) ---
-    void planLatestGoal() {
+    // Validate inputs, run the planner, and publish the resulting path/markers.
+    // Automatically re-invoked when a deferred map or goal update was queued.
+    void plan_latest_goal() {
         if (!pending_goal_) return;
 
         if (!octree_) {
@@ -153,7 +174,7 @@ class N6dPlanner : public rclcpp::Node {
             return;
         }
 
-        planning_in_progress_ = true;
+        planning_in_progress_ = true;  // mark busy (no replans until done)
         goal_pose_ = pending_goal_;
         pending_goal_.reset();
 
@@ -161,37 +182,44 @@ class N6dPlanner : public rclcpp::Node {
 
         // --- measure only the planning step ---
         const auto t0 = std::chrono::steady_clock::now();
-        const bool ok = planPath(path_msg);
+        const bool ok = plan_path(path_msg);  // core planning call
         const auto t1 = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         RCLCPP_INFO(get_logger(), "Plan computation time: %.3f ms (%s).", ms,
                     ok ? "success" : "failure");
         // --------------------------------------
 
+        // Publish results if successful, otherwise clear any existing markers.
         if (ok) {
             path_pub_->publish(path_msg);
-            publishDebugMarkers(path_msg);
+            publish_debug_markers(path_msg);
             RCLCPP_INFO(get_logger(), "Published path with %zu poses (length %.2f m).",
-                        path_msg.poses.size(), estimatePathLength(path_msg));
+                        path_msg.poses.size(), estimate_path_length(path_msg));
         } else {
-            clearDebugMarkers();
+            clear_debug_markers();
             RCLCPP_WARN(get_logger(), "Failed to find a collision-free path.");
         }
 
-        planning_in_progress_ = false;
+        planning_in_progress_ = false;  // mark idle
 
+        // Process any deferred map or goal updates now.
         if (deferred_octomap_msg_) {
-            updateOctomapFromMessage(deferred_octomap_msg_);
+            update_octomap_from_message(deferred_octomap_msg_);
             deferred_octomap_msg_.reset();
         }
+
+        // Check for a new pending goal to plan next.
         if (pending_goal_) {
-            planLatestGoal();
+            plan_latest_goal();
         }
     }
 
     // --- Map handling ---
-    void updateOctomapFromMessage(const octomap_msgs::msg::Octomap::SharedPtr& msg) {
+    // Convert the incoming message into an OcTree and cache it for downstream queries.
+    // On the first map update this also back-fills the line sampling resolution.
+    void update_octomap_from_message(const octomap_msgs::msg::Octomap::SharedPtr& msg) {
         std::unique_ptr<octomap::AbstractOcTree> abstract(octomap_msgs::msgToMap(*msg));
+
         if (!abstract) {
             RCLCPP_WARN(get_logger(), "Octomap message could not be converted.");
             return;
@@ -212,7 +240,9 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // --- Core planning ---
-    bool planPath(nav_msgs::msg::Path& path_out) {
+    // Main planning entry point that runs a straight-line check followed by A* when needed.
+    // path_out is filled with the planned waypoint path on success.
+    bool plan_path(nav_msgs::msg::Path& path_out) {
         const auto& start_p = current_pose_->pose.position;
         const auto& goal_p = goal_pose_->pose.position;
         RCLCPP_INFO(get_logger(), "Planning from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f).",
@@ -220,6 +250,7 @@ class N6dPlanner : public rclcpp::Node {
 
         if (!octree_) return false;
 
+        // Convert start/goal positions into the discrete OcTree representation.
         octomap::OcTreeKey start_key, goal_key;
         if (!octree_->coordToKeyChecked(start_p.x, start_p.y, start_p.z, start_key)) {
             RCLCPP_WARN(get_logger(), "Start is outside map bounds.");
@@ -230,18 +261,20 @@ class N6dPlanner : public rclcpp::Node {
             return false;
         }
 
-        const octomap::point3d start_c = keyToCoord(*octree_, start_key);
-        const octomap::point3d goal_c = keyToCoord(*octree_, goal_key);
+        const octomap::point3d start_c = key_to_coord(*octree_, start_key);
+        const octomap::point3d goal_c = key_to_coord(*octree_, goal_key);
 
-        if (!isCollisionFree(start_c)) {
+        // Drop quests that begin or end inside occupied voxels.
+        if (!is_collision_free(start_c)) {
             RCLCPP_WARN(get_logger(), "Start in collision.");
             return false;
         }
-        if (!isCollisionFree(goal_c)) {
+        if (!is_collision_free(goal_c)) {
             RCLCPP_WARN(get_logger(), "Goal in collision.");
             return false;
         }
 
+        // Handle degenerate case where start and goal are extremely close.
         if (euclidean(start_c, goal_c) < 1e-3) {
             path_out = nav_msgs::msg::Path();
             path_out.header.stamp = now();
@@ -257,30 +290,33 @@ class N6dPlanner : public rclcpp::Node {
         }
 
         // Try straight line first
-        if (isLineFree(start_c, goal_c)) {
-            path_out = createStraightPath(start_c, goal_c);
+        if (is_line_free(start_c, goal_c)) {
+            path_out = create_straight_path(start_c, goal_c);
             return true;
         }
 
-        // A* grid over OcTree keys
+        // Fall back to an A* search on the voxel grid when the straight line is blocked.
         std::vector<octomap::OcTreeKey> key_path;
-        if (!performAStar(start_key, goal_key, start_c, goal_c, key_path)) {
+        if (!perform_a_star(start_key, goal_key, start_c, goal_c, key_path)) {
             return false;
         }
-
-        path_out = keysToPath(key_path);
+        path_out = keys_to_path(key_path);
         return true;
     }
 
-    bool performAStar(const octomap::OcTreeKey& start_key, const octomap::OcTreeKey& goal_key,
-                      const octomap::point3d& start_coord, const octomap::point3d& goal_coord,
-                      std::vector<octomap::OcTreeKey>& result_path) {
+    // OctoMap A* expansion using 26-connected voxel moves and the Euclidean heuristic.
+    // start_key/goal_key are the discrete voxel keys nearest to the robot and goal.
+    // start_coord/goal_coord are the metric coordinates of those voxels.
+    // result_path is populated with the ordered OcTree keys forming the final route.
+    bool perform_a_star(const octomap::OcTreeKey& start_key, const octomap::OcTreeKey& goal_key,
+                        const octomap::point3d& start_coord, const octomap::point3d& goal_coord,
+                        std::vector<octomap::OcTreeKey>& result_path) {
         const double res = octree_->getResolution();
         const double max_range2 = (max_search_range_ > 0.0)
                                       ? max_search_range_ * max_search_range_
                                       : std::numeric_limits<double>::infinity();
 
-        // 26-connected neighbors
+        // Enumerate the 26 neighbor directions (von Neumann + diagonals) scaled by map resolution.
         std::vector<octomap::point3d> dirs;
         dirs.reserve(26);
         const float step = static_cast<float>(res);
@@ -289,20 +325,25 @@ class N6dPlanner : public rclcpp::Node {
                 for (int dz = -1; dz <= 1; ++dz)
                     if (dx || dy || dz) dirs.emplace_back(dx * step, dy * step, dz * step);
 
+        // A* search containers
         std::priority_queue<QueueEntry, std::vector<QueueEntry>, QueueCompare> open;
-        std::unordered_set<KeyId> closed;
-        std::unordered_map<KeyId, double> g;
-        std::unordered_map<KeyId, KeyId> parent;
-        std::unordered_map<KeyId, octomap::OcTreeKey> key_of;
+        std::unordered_set<key_id_t> closed;
+        std::unordered_map<key_id_t, double> path_costs;
+        std::unordered_map<key_id_t, key_id_t> parent;
+        std::unordered_map<key_id_t, octomap::OcTreeKey> key_of;
 
-        const KeyId s = keyToId(start_key), gk = keyToId(goal_key);
-        g[s] = 0.0;
-        parent[s] = s;
-        key_of[s] = start_key;
-        open.push({s, euclidean(start_coord, goal_coord)});
+        // Initialize the search with the start node.
+        const key_id_t start_id = key_to_id(start_key);
+        const key_id_t goal_id = key_to_id(goal_key);
+        path_costs[start_id] = 0.0;
+        parent[start_id] = start_id;
+        key_of[start_id] = start_key;
+        open.push({start_id, euclidean(start_coord, goal_coord)});
 
+        // Main A* expansion loop.
         std::size_t expansions = 0;
         while (!open.empty()) {
+            // Enforce a hard limit on expansions to prevent pathological cases.
             if (expansions++ > static_cast<std::size_t>(max_expansions_)) {
                 RCLCPP_WARN(get_logger(), "A* expansion limit reached (%d).", max_expansions_);
                 return false;
@@ -313,46 +354,56 @@ class N6dPlanner : public rclcpp::Node {
             if (closed.count(cur.id)) continue;
 
             const octomap::OcTreeKey cur_key = key_of.at(cur.id);
-            const octomap::point3d cur_c = keyToCoord(*octree_, cur_key);
+            const octomap::point3d cur_c = key_to_coord(*octree_, cur_key);
 
-            if (cur.id == gk) {
-                reconstructPath(gk, s, parent, key_of, result_path);
+            // Goal test
+            if (cur.id == goal_id) {
+                reconstruct_path(goal_id, start_id, parent, key_of, result_path);
                 return true;
             }
 
             closed.insert(cur.id);
 
+            // Expand neighbors
             for (const auto& d : dirs) {
                 const octomap::point3d nb_c = cur_c + d;
-                if (squaredDistance(nb_c, start_coord) > max_range2) continue;
 
+                // Enforce maximum search range from start.
+                if (squared_distance(nb_c, start_coord) > max_range2) continue;
+
+                // Convert neighbor coordinate back into an OcTree key.
                 octomap::OcTreeKey nb_key;
                 if (!octree_->coordToKeyChecked(nb_c.x(), nb_c.y(), nb_c.z(), nb_key)) continue;
 
-                const KeyId nb_id = keyToId(nb_key);
-                if (closed.count(nb_id)) continue;
-                if (!isCollisionFree(nb_c)) continue;
+                const key_id_t nb_id = key_to_id(nb_key);
+                if (closed.count(nb_id)) continue;       // already expanded
+                if (!is_collision_free(nb_c)) continue;  // occupied voxel
 
-                const double tentative_g = g[cur.id] + euclidean(cur_c, nb_c);
-                auto itg = g.find(nb_id);
-                if (itg != g.end() && tentative_g >= itg->second) continue;
+                // Tentative g cost through current node.
+                const double tentative_g = path_costs[cur.id] + euclidean(cur_c, nb_c);
+                auto cost_it = path_costs.find(nb_id);
+                if (cost_it != path_costs.end() && tentative_g >= cost_it->second) continue;
 
-                g[nb_id] = tentative_g;
+                // Record best path to this neighbor found so far.
+                path_costs[nb_id] = tentative_g;
                 parent[nb_id] = cur.id;
                 key_of[nb_id] = nb_key;
-                const double h = euclidean(nb_c, goal_coord);
-                open.push({nb_id, tentative_g + h});
+                const double h = euclidean(nb_c, goal_coord);  // heuristic (Euclidean distance)
+                open.push({nb_id, tentative_g + h});           // f = g + h
             }
         }
         return false;
     }
 
-    void reconstructPath(KeyId goal_id, KeyId start_id,
-                         const std::unordered_map<KeyId, KeyId>& parent,
-                         const std::unordered_map<KeyId, octomap::OcTreeKey>& key_of,
-                         std::vector<octomap::OcTreeKey>& out) const {
+    // Walk the parent map recovered from A* and produce the ordered OcTree key path.
+    void reconstruct_path(key_id_t goal_id, key_id_t start_id,
+                          const std::unordered_map<key_id_t, key_id_t>& parent,
+                          const std::unordered_map<key_id_t, octomap::OcTreeKey>& key_of,
+                          std::vector<octomap::OcTreeKey>& out) const {
         out.clear();
-        KeyId cur = goal_id;
+        key_id_t cur = goal_id;
+
+        // Walk backwards from goal to start.
         while (true) {
             auto it = key_of.find(cur);
             if (it == key_of.end()) break;
@@ -365,13 +416,16 @@ class N6dPlanner : public rclcpp::Node {
         std::reverse(out.begin(), out.end());
     }
 
-    nav_msgs::msg::Path keysToPath(const std::vector<octomap::OcTreeKey>& keys) const {
+    // Transform OcTree keys into a ROS Path message anchored in the map frame.
+    nav_msgs::msg::Path keys_to_path(const std::vector<octomap::OcTreeKey>& keys) const {
         nav_msgs::msg::Path path;
         path.header.stamp = now();
         path.header.frame_id = map_frame_;
         path.poses.reserve(keys.size());
+
+        // Convert each key into a PoseStamped waypoint.
         for (const auto& k : keys) {
-            const auto c = keyToCoord(*octree_, k);
+            const auto c = key_to_coord(*octree_, k);
             geometry_msgs::msg::PoseStamped p;
             p.header = path.header;
             p.pose.position.x = c.x();
@@ -383,16 +437,19 @@ class N6dPlanner : public rclcpp::Node {
         return path;
     }
 
-    nav_msgs::msg::Path createStraightPath(const octomap::point3d& a,
-                                           const octomap::point3d& b) const {
+    // Produce a discretised straight-line path along the requested segment.
+    nav_msgs::msg::Path create_straight_path(const octomap::point3d& a,
+                                             const octomap::point3d& b) const {
         nav_msgs::msg::Path path;
         path.header.stamp = now();
         path.header.frame_id = map_frame_;
 
+        // Convert each key into a PoseStamped waypoint.
         const double dist = euclidean(a, b);
         const double step = std::max(line_sample_step_, 1e-3);
         const int steps = std::max(2, static_cast<int>(std::ceil(dist / step)));
 
+        // Interpolate waypoints along the segment.
         path.poses.reserve(static_cast<std::size_t>(steps + 1));
         for (int i = 0; i <= steps; ++i) {
             const double t = static_cast<double>(i) / static_cast<double>(steps);
@@ -409,17 +466,21 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // --- Collision / line checks ---
-    bool isCollisionFree(const octomap::point3d& p) const {
+    // Brute-force collision check that dilates occupied voxels with a configurable radius.
+    bool is_collision_free(const octomap::point3d& p) const {
         if (!octree_) return false;
         const double res = octree_->getResolution();
         const int r_cells = std::max(1, static_cast<int>(std::ceil(robot_radius_ / res)));
+
+        // Check all voxels within the robot radius.
         for (int dx = -r_cells; dx <= r_cells; ++dx)
             for (int dy = -r_cells; dy <= r_cells; ++dy)
                 for (int dz = -r_cells; dz <= r_cells; ++dz) {
+                    // Skip voxels outside the robot radius.
                     const octomap::point3d s = p + octomap::point3d(dx * static_cast<float>(res),
                                                                     dy * static_cast<float>(res),
                                                                     dz * static_cast<float>(res));
-                    if (squaredDistance(s, p) > robot_radius_ * robot_radius_) continue;
+                    if (squared_distance(s, p) > robot_radius_ * robot_radius_) continue;
                     octomap::OcTreeNode* node = octree_->search(s);
                     if (!node) continue;
                     if (node->getOccupancy() >= occupancy_threshold_) return false;
@@ -427,23 +488,29 @@ class N6dPlanner : public rclcpp::Node {
         return true;
     }
 
-    bool isLineFree(const octomap::point3d& a, const octomap::point3d& b) const {
+    // Sample a segment and ensure every waypoint remains collision free.
+    bool is_line_free(const octomap::point3d& a, const octomap::point3d& b) const {
         if (!octree_) return false;
         const double dist = euclidean(a, b);
         const double step =
             std::max(line_sample_step_, static_cast<double>(octree_->getResolution()));
         const int N = std::max(2, static_cast<int>(std::ceil(dist / step)));
+
+        // Sample along the line segment.
         for (int i = 0; i <= N; ++i) {
             const double t = static_cast<double>(i) / static_cast<double>(N);
             const auto p = a + (b - a) * static_cast<float>(t);
-            if (!isCollisionFree(p)) return false;
+            if (!is_collision_free(p)) return false;
         }
         return true;
     }
 
-    double estimatePathLength(const nav_msgs::msg::Path& path) const {
+    // Convenience helper for logging the length of the current plan.
+    double estimate_path_length(const nav_msgs::msg::Path& path) const {
         if (path.poses.size() < 2) return 0.0;
         double L = 0.0;
+
+        // Sum up straight-line distances between consecutive waypoints.
         for (std::size_t i = 1; i < path.poses.size(); ++i) {
             const auto& a = path.poses[i - 1].pose.position;
             const auto& b = path.poses[i].pose.position;
@@ -454,21 +521,22 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // --- Debug markers ---
-    void publishDebugMarkers(const nav_msgs::msg::Path& path) {
+    // Visualise the path as a line strip, waypoint markers, and start/goal spheres.
+    void publish_debug_markers(const nav_msgs::msg::Path& path) {
         if (!marker_pub_ || path.poses.empty()) return;
 
         visualization_msgs::msg::MarkerArray arr;
 
         visualization_msgs::msg::Marker clear;
         clear.header = path.header;
-        clear.ns = kMarkerNamespace;
+        clear.ns = k_marker_namespace;
         clear.id = 0;
         clear.action = visualization_msgs::msg::Marker::DELETEALL;
         arr.markers.push_back(clear);
 
         visualization_msgs::msg::Marker line;
         line.header = path.header;
-        line.ns = kMarkerNamespace;
+        line.ns = k_marker_namespace;
         line.id = 1;
         line.type = visualization_msgs::msg::Marker::LINE_STRIP;
         line.action = visualization_msgs::msg::Marker::ADD;
@@ -483,7 +551,7 @@ class N6dPlanner : public rclcpp::Node {
 
         visualization_msgs::msg::Marker waypoints;
         waypoints.header = path.header;
-        waypoints.ns = kMarkerNamespace;
+        waypoints.ns = k_marker_namespace;
         waypoints.id = 2;
         waypoints.type = visualization_msgs::msg::Marker::SPHERE_LIST;
         waypoints.action = visualization_msgs::msg::Marker::ADD;
@@ -502,7 +570,7 @@ class N6dPlanner : public rclcpp::Node {
 
         visualization_msgs::msg::Marker start;
         start.header = path.header;
-        start.ns = kMarkerNamespace;
+        start.ns = k_marker_namespace;
         start.id = 3;
         start.type = visualization_msgs::msg::Marker::SPHERE;
         start.action = visualization_msgs::msg::Marker::ADD;
@@ -517,7 +585,7 @@ class N6dPlanner : public rclcpp::Node {
 
         visualization_msgs::msg::Marker goal;
         goal.header = path.header;
-        goal.ns = kMarkerNamespace;
+        goal.ns = k_marker_namespace;
         goal.id = 4;
         goal.type = visualization_msgs::msg::Marker::SPHERE;
         goal.action = visualization_msgs::msg::Marker::ADD;
@@ -533,13 +601,14 @@ class N6dPlanner : public rclcpp::Node {
         marker_pub_->publish(arr);
     }
 
-    void clearDebugMarkers() {
+    // Remove all previously published markers from RViz.
+    void clear_debug_markers() {
         if (!marker_pub_) return;
         visualization_msgs::msg::MarkerArray arr;
         visualization_msgs::msg::Marker clear;
         clear.header.frame_id = map_frame_;
         clear.header.stamp = now();
-        clear.ns = kMarkerNamespace;
+        clear.ns = k_marker_namespace;
         clear.id = 0;
         clear.action = visualization_msgs::msg::Marker::DELETEALL;
         arr.markers.push_back(clear);
@@ -547,29 +616,38 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // --- Members ---
+    // Subscription to streamed OctoMap messages.
     rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr map_sub_;
+    // Latest robot pose sample.
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+    // Incoming goal requests.
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+    // Publisher for the planned path.
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+    // Optional publisher for RViz visualisation.
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
+    // Backing occupancy map used for collision checks.
     std::shared_ptr<octomap::OcTree> octree_;
+    // Latest pose received from localisation.
     std::optional<geometry_msgs::msg::PoseStamped> current_pose_;
+    // Currently executing goal.
     std::optional<geometry_msgs::msg::PoseStamped> goal_pose_;
+    // Most recent goal waiting to be processed.
     std::optional<geometry_msgs::msg::PoseStamped> pending_goal_;
 
     // params
-    double robot_radius_{0.35};
-    double occupancy_threshold_{0.5};
-    double max_search_range_{15.0};
-    int max_expansions_{60000};
-    double line_sample_step_{0.25};
-    std::string map_frame_{"map"};
-    bool debug_markers_{false};
-    std::string marker_topic_;
+    double robot_radius_{0.35};        // Collision model radius (m).
+    double occupancy_threshold_{0.5};  // Occupancy probability treated as an obstacle.
+    double max_search_range_{15.0};    // Maximum allowed straight-line distance (m).
+    int max_expansions_{60000};        // Safety limit on A* expansions.
+    double line_sample_step_{0.25};    // Step size (m) for straight-line feasibility tests.
+    std::string map_frame_{"map"};     // Output frame id.
+    bool debug_markers_{false};        // Whether to publish RViz markers.
+    std::string marker_topic_;         // MarkerArray output topic.
 
     // state
-    bool planning_in_progress_{false};
+    bool planning_in_progress_{false};  // True while the planner is solving the current goal.
     octomap_msgs::msg::Octomap::SharedPtr deferred_octomap_msg_;
 };
 

@@ -11,6 +11,7 @@ from launch.actions import DeclareLaunchArgument
 
 
 def generate_launch_description() -> LaunchDescription:
+    # Default parameter file bundled with the package.
     default_config = os.path.join(
         get_package_share_directory("nav6d"), "config", "n6d_planner.yaml"
     )
@@ -19,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
+            # Allow callers to override the planner configuration at launch time.
             DeclareLaunchArgument("config_file", default_value=default_config),
             Node(
                 package="nav6d",
@@ -26,6 +28,7 @@ def generate_launch_description() -> LaunchDescription:
                 name="n6d_planner",
                 namespace="teleop",
                 output="screen",
+                # Pass the configuration path (and any overrides) straight into the node.
                 parameters=[config_file],
             ),
         ]
