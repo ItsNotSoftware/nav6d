@@ -1,0 +1,15 @@
+teleop:
+  n6d_planner:
+    ros__parameters:
+      map_topic: /octomap_full
+      pose_topic: /space_cobot/pose
+      goal_topic: /nav6d/goal
+      path_topic: /nav6d/local_path
+      map_frame: map
+      robot_radius: 0.35
+      occupancy_threshold: 0.5
+      max_search_range: 15.0
+      max_expansions: 60000
+      line_sample_step: 0.25
+      debug_markers: true
+      marker_topic: /nav6d/local_path_markers
