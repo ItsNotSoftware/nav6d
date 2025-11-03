@@ -17,6 +17,10 @@
 #include <vector>
 #include <chrono>
 
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Vector3.h>
+
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "octomap/OcTree.h"
@@ -421,17 +425,21 @@ class N6dPlanner : public rclcpp::Node {
         nav_msgs::msg::Path path;
         path.header.stamp = now();
         path.header.frame_id = map_frame_;
-        path.poses.reserve(keys.size());
 
-        // Convert each key into a PoseStamped waypoint.
-        for (const auto& k : keys) {
-            const auto c = key_to_coord(*octree_, k);
+        if (keys.empty()) return path;
+
+        std::vector<octomap::point3d> coords;
+        coords.reserve(keys.size());
+        for (const auto& k : keys) coords.push_back(key_to_coord(*octree_, k));
+
+        path.poses.reserve(coords.size());
+        for (std::size_t i = 0; i < coords.size(); ++i) {
             geometry_msgs::msg::PoseStamped p;
             p.header = path.header;
-            p.pose.position.x = c.x();
-            p.pose.position.y = c.y();
-            p.pose.position.z = c.z();
-            p.pose.orientation.w = 1.0;
+            p.pose.position.x = coords[i].x();
+            p.pose.position.y = coords[i].y();
+            p.pose.position.z = coords[i].z();
+            p.pose.orientation = orientation_from_path_index(coords, i);
             path.poses.push_back(p);
         }
         return path;
@@ -448,6 +456,7 @@ class N6dPlanner : public rclcpp::Node {
         const double dist = euclidean(a, b);
         const double step = std::max(line_sample_step_, 1e-3);
         const int steps = std::max(2, static_cast<int>(std::ceil(dist / step)));
+        const geometry_msgs::msg::Quaternion q = orientation_from_tangent(b - a);
 
         // Interpolate waypoints along the segment.
         path.poses.reserve(static_cast<std::size_t>(steps + 1));
@@ -459,10 +468,65 @@ class N6dPlanner : public rclcpp::Node {
             p.pose.position.x = pnt.x();
             p.pose.position.y = pnt.y();
             p.pose.position.z = pnt.z();
-            p.pose.orientation.w = 1.0;
+            p.pose.orientation = q;
             path.poses.push_back(p);
         }
         return path;
+    }
+
+    geometry_msgs::msg::Quaternion orientation_from_path_index(
+        const std::vector<octomap::point3d>& coords, std::size_t idx) const {
+        geometry_msgs::msg::Quaternion q;
+        q.w = 1.0;
+        if (coords.size() <= 1) return q;
+
+        octomap::point3d tangent;
+        if (idx == 0) {
+            tangent = coords[1] - coords[0];
+        } else if (idx >= coords.size() - 1) {
+            tangent = coords[idx] - coords[idx - 1];
+        } else {
+            tangent = coords[idx + 1] - coords[idx - 1];
+        }
+        return orientation_from_tangent(tangent);
+    }
+
+    geometry_msgs::msg::Quaternion orientation_from_tangent(const octomap::point3d& tangent) const {
+        geometry_msgs::msg::Quaternion q;
+        tf2::Vector3 x_axis(static_cast<double>(tangent.x()), static_cast<double>(tangent.y()),
+                            static_cast<double>(tangent.z()));
+        if (x_axis.length2() < 1e-8) {
+            q.w = 1.0;
+            return q;
+        }
+        x_axis.normalize();
+
+        tf2::Vector3 z_axis(0.0, 0.0, 1.0);
+        if (std::abs(x_axis.dot(z_axis)) > 0.95) z_axis = tf2::Vector3(0.0, 1.0, 0.0);
+        tf2::Vector3 y_axis = z_axis.cross(x_axis);
+        if (y_axis.length2() < 1e-8) {
+            z_axis = tf2::Vector3(1.0, 0.0, 0.0);
+            y_axis = z_axis.cross(x_axis);
+        }
+        y_axis.normalize();
+        tf2::Vector3 z_ortho = x_axis.cross(y_axis);
+        if (z_ortho.length2() < 1e-8) {
+            z_ortho = tf2::Vector3(0.0, 0.0, 1.0);
+        } else {
+            z_ortho.normalize();
+        }
+
+        tf2::Matrix3x3 basis(x_axis.x(), y_axis.x(), z_ortho.x(), x_axis.y(), y_axis.y(),
+                             z_ortho.y(), x_axis.z(), y_axis.z(), z_ortho.z());
+
+        tf2::Quaternion quat;
+        basis.getRotation(quat);
+        quat.normalize();
+        q.x = quat.x();
+        q.y = quat.y();
+        q.z = quat.z();
+        q.w = quat.w();
+        return q;
     }
 
     // --- Collision / line checks ---
@@ -549,21 +613,25 @@ class N6dPlanner : public rclcpp::Node {
         for (const auto& ps : path.poses) line.points.emplace_back(ps.pose.position);
         arr.markers.push_back(line);
 
-        visualization_msgs::msg::Marker waypoints;
-        waypoints.header = path.header;
-        waypoints.ns = k_marker_namespace;
-        waypoints.id = 2;
-        waypoints.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-        waypoints.action = visualization_msgs::msg::Marker::ADD;
-        waypoints.pose.orientation.w = 1.0;
-        waypoints.scale.x = waypoints.scale.y = waypoints.scale.z = 0.12;
-        waypoints.color.a = 0.75F;
-        waypoints.color.r = 0.2F;
-        waypoints.color.g = 0.8F;
-        waypoints.color.b = 1.0F;
-        waypoints.points.reserve(path.poses.size());
-        for (const auto& pose : path.poses) waypoints.points.emplace_back(pose.pose.position);
-        arr.markers.push_back(waypoints);
+        const std::size_t waypoint_count = path.poses.size();
+        const int waypoint_id_base = 10;
+        for (std::size_t i = 0; i < waypoint_count; ++i) {
+            visualization_msgs::msg::Marker box;
+            box.header = path.header;
+            box.ns = k_marker_namespace;
+            box.id = waypoint_id_base + static_cast<int>(i);
+            box.type = visualization_msgs::msg::Marker::CUBE;
+            box.action = visualization_msgs::msg::Marker::ADD;
+            box.pose = path.poses[i].pose;
+            box.scale.x = 0.22;
+            box.scale.y = 0.14;
+            box.scale.z = 0.05;
+            box.color.a = 0.75F;
+            box.color.r = 0.2F;
+            box.color.g = 0.8F;
+            box.color.b = 1.0F;
+            arr.markers.push_back(box);
+        }
 
         const auto& sp = path.poses.front().pose.position;
         const auto& gp = path.poses.back().pose.position;
@@ -572,11 +640,13 @@ class N6dPlanner : public rclcpp::Node {
         start.header = path.header;
         start.ns = k_marker_namespace;
         start.id = 3;
-        start.type = visualization_msgs::msg::Marker::SPHERE;
+        start.type = visualization_msgs::msg::Marker::CUBE;
         start.action = visualization_msgs::msg::Marker::ADD;
         start.pose.position = sp;
-        start.pose.orientation.w = 1.0;
-        start.scale.x = start.scale.y = start.scale.z = 0.18;
+        start.pose.orientation = path.poses.front().pose.orientation;
+        start.scale.x = 0.28;
+        start.scale.y = 0.20;
+        start.scale.z = 0.08;
         start.color.a = 0.9F;
         start.color.r = 0.0F;
         start.color.g = 0.4F;
@@ -587,11 +657,13 @@ class N6dPlanner : public rclcpp::Node {
         goal.header = path.header;
         goal.ns = k_marker_namespace;
         goal.id = 4;
-        goal.type = visualization_msgs::msg::Marker::SPHERE;
+        goal.type = visualization_msgs::msg::Marker::CUBE;
         goal.action = visualization_msgs::msg::Marker::ADD;
         goal.pose.position = gp;
-        goal.pose.orientation.w = 1.0;
-        goal.scale.x = goal.scale.y = goal.scale.z = 0.20;
+        goal.pose.orientation = path.poses.back().pose.orientation;
+        goal.scale.x = 0.30;
+        goal.scale.y = 0.22;
+        goal.scale.z = 0.10;
         goal.color.a = 0.9F;
         goal.color.r = 1.0F;
         goal.color.g = 0.2F;

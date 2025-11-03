@@ -25,8 +25,8 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="nav6d",
                 executable="n6d_planner",
-                name="n6d_planner",
-                namespace="teleop",
+                name="planner",
+                namespace="nav6d",
                 output="screen",
                 # Pass the configuration path (and any overrides) straight into the node.
                 parameters=[config_file],

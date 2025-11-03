@@ -11,6 +11,7 @@ find_package(nav_msgs REQUIRED)
 find_package(octomap REQUIRED)
 find_package(octomap_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 
 add_executable(n6d_planner src/n6d_planner_node.cpp)
 ament_target_dependencies(
@@ -21,6 +22,7 @@ ament_target_dependencies(
   octomap
   octomap_msgs
   visualization_msgs
+  tf2
 )
 
 install(

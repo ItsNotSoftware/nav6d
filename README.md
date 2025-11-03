@@ -97,6 +97,8 @@ Parameters are managed via the YAML configuration file.
 
 Tune these parameters to match your robot geometry, map resolution, and search performance requirements.
 
+> **Performance tip:** OctoMap resolution has a noticeable impact on planning speed—finer grids explode the number of voxels the A* search and collision checks must touch. In our tests a 0.2 m resolution offered a good trade-off between fidelity and runtime; use coarser maps if you need faster replans.
+
 ## Example Usage
 
 1. Start an OctoMap server (or another compatible map publisher):
