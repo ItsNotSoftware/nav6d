@@ -92,10 +92,12 @@ Parameters are managed via the YAML configuration file.
 | `max_search_range`    | Maximum search distance (m)               | `15.0`                        |
 | `max_expansions`      | A* node expansion limit                   | `60000`                       |
 | `line_sample_step`    | Step size for line feasibility checks (m) | `0.25`                        |
+| `slerp_orientation`   | SLERP interpolate start→goal orientation  | `false`                       |
 | `debug_markers`       | Enable RViz path visualization                 | `true`                        |
 | `marker_topic`        | MarkerArray topic name                    | `/nav6d/planner/path_markers` |
 
 Tune these parameters to match your robot geometry, map resolution, and search performance requirements.
+The bundled `n6d_planner.yaml` uses the `/**:` wildcard so the same values apply whether you launch the node directly (`ros2 run`) or via `ros2 launch` with a namespace.
 
 > **Performance tip:** OctoMap resolution has a noticeable impact on planning speed—finer grids explode the number of voxels the A* search and collision checks must touch. In our tests a 0.2 m resolution offered a good trade-off between fidelity and runtime; use coarser maps if you need faster replans.
 
