@@ -1,6 +1,6 @@
 // n6d_planner_node.cpp
 //
-// ROS 2 node that computes 3D collision-free paths with an A* search on an OctoMap.
+// ROS2 node that computes 3D collision-free paths with an A* and SLERP on an OctoMap.
 
 #include <algorithm>
 #include <cmath>
@@ -95,6 +95,7 @@ class N6dPlanner : public rclcpp::Node {
         max_search_range_ = declare_parameter("max_search_range", 15.0);
         max_expansions_ = declare_parameter("max_expansions", 60000);
         line_sample_step_ = declare_parameter("line_sample_step", 0.25);
+        slerp_orientation_ = declare_parameter("slerp_orientation", false);
         debug_markers_ = declare_parameter("debug_markers", true);
         marker_topic_ =
             declare_parameter<std::string>("marker_topic", "/nav6d/planner/path_markers");
@@ -278,6 +279,9 @@ class N6dPlanner : public rclcpp::Node {
             return false;
         }
 
+        const geometry_msgs::msg::Quaternion start_q = current_pose_->pose.orientation;
+        const geometry_msgs::msg::Quaternion goal_q = goal_pose_->pose.orientation;
+
         // Handle degenerate case where start and goal are extremely close.
         if (euclidean(start_c, goal_c) < 1e-3) {
             path_out = nav_msgs::msg::Path();
@@ -288,14 +292,15 @@ class N6dPlanner : public rclcpp::Node {
             pose.pose.position.x = start_c.x();
             pose.pose.position.y = start_c.y();
             pose.pose.position.z = start_c.z();
-            pose.pose.orientation.w = 1.0;
+            pose.pose.orientation =
+                slerp_orientation_ ? slerp_between(start_q, goal_q, 1.0) : goal_q;
             path_out.poses.push_back(pose);
             return true;
         }
 
         // Try straight line first
         if (is_line_free(start_c, goal_c)) {
-            path_out = create_straight_path(start_c, goal_c);
+            path_out = create_straight_path(start_c, goal_c, start_q, goal_q);
             return true;
         }
 
@@ -304,7 +309,7 @@ class N6dPlanner : public rclcpp::Node {
         if (!perform_a_star(start_key, goal_key, start_c, goal_c, key_path)) {
             return false;
         }
-        path_out = keys_to_path(key_path);
+        path_out = keys_to_path(key_path, start_q, goal_q);
         return true;
     }
 
@@ -421,33 +426,37 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // Transform OcTree keys into a ROS Path message anchored in the map frame.
-    nav_msgs::msg::Path keys_to_path(const std::vector<octomap::OcTreeKey>& keys) const {
+    nav_msgs::msg::Path keys_to_path(const std::vector<octomap::OcTreeKey>& keys,
+                                     const geometry_msgs::msg::Quaternion& start_q,
+                                     const geometry_msgs::msg::Quaternion& goal_q) const {
         nav_msgs::msg::Path path;
         path.header.stamp = now();
         path.header.frame_id = map_frame_;
 
-        if (keys.empty()) return path;
+        if (!keys.empty()) {
+            std::vector<octomap::point3d> coords;
+            coords.reserve(keys.size());
+            for (const auto& k : keys) coords.push_back(key_to_coord(*octree_, k));
 
-        std::vector<octomap::point3d> coords;
-        coords.reserve(keys.size());
-        for (const auto& k : keys) coords.push_back(key_to_coord(*octree_, k));
-
-        path.poses.reserve(coords.size());
-        for (std::size_t i = 0; i < coords.size(); ++i) {
-            geometry_msgs::msg::PoseStamped p;
-            p.header = path.header;
-            p.pose.position.x = coords[i].x();
-            p.pose.position.y = coords[i].y();
-            p.pose.position.z = coords[i].z();
-            p.pose.orientation = orientation_from_path_index(coords, i);
-            path.poses.push_back(p);
+            path.poses.reserve(coords.size());
+            for (std::size_t i = 0; i < coords.size(); ++i) {
+                geometry_msgs::msg::PoseStamped p;
+                p.header = path.header;
+                p.pose.position.x = coords[i].x();
+                p.pose.position.y = coords[i].y();
+                p.pose.position.z = coords[i].z();
+                p.pose.orientation = orientation_for_path(coords, i, start_q, goal_q);
+                path.poses.push_back(p);
+            }
         }
         return path;
     }
 
     // Produce a discretised straight-line path along the requested segment.
     nav_msgs::msg::Path create_straight_path(const octomap::point3d& a,
-                                             const octomap::point3d& b) const {
+                                             const octomap::point3d& b,
+                                             const geometry_msgs::msg::Quaternion& start_q,
+                                             const geometry_msgs::msg::Quaternion& goal_q) const {
         nav_msgs::msg::Path path;
         path.header.stamp = now();
         path.header.frame_id = map_frame_;
@@ -456,22 +465,38 @@ class N6dPlanner : public rclcpp::Node {
         const double dist = euclidean(a, b);
         const double step = std::max(line_sample_step_, 1e-3);
         const int steps = std::max(2, static_cast<int>(std::ceil(dist / step)));
-        const geometry_msgs::msg::Quaternion q = orientation_from_tangent(b - a);
-
-        // Interpolate waypoints along the segment.
-        path.poses.reserve(static_cast<std::size_t>(steps + 1));
+        std::vector<octomap::point3d> coords;
+        coords.reserve(static_cast<std::size_t>(steps + 1));
         for (int i = 0; i <= steps; ++i) {
             const double t = static_cast<double>(i) / static_cast<double>(steps);
             const auto pnt = a + (b - a) * static_cast<float>(t);
+            coords.push_back(pnt);
+        }
+
+        // Interpolate waypoints along the segment.
+        path.poses.reserve(coords.size());
+        for (std::size_t i = 0; i < coords.size(); ++i) {
             geometry_msgs::msg::PoseStamped p;
             p.header = path.header;
-            p.pose.position.x = pnt.x();
-            p.pose.position.y = pnt.y();
-            p.pose.position.z = pnt.z();
-            p.pose.orientation = q;
+            p.pose.position.x = coords[i].x();
+            p.pose.position.y = coords[i].y();
+            p.pose.position.z = coords[i].z();
+            p.pose.orientation = orientation_for_path(coords, i, start_q, goal_q);
             path.poses.push_back(p);
         }
         return path;
+    }
+
+    geometry_msgs::msg::Quaternion orientation_for_path(
+        const std::vector<octomap::point3d>& coords, std::size_t idx,
+        const geometry_msgs::msg::Quaternion& start_q,
+        const geometry_msgs::msg::Quaternion& goal_q) const {
+        if (slerp_orientation_) {
+            const double denom = coords.size() > 1 ? static_cast<double>(coords.size() - 1) : 1.0;
+            const double t = std::clamp(static_cast<double>(idx) / denom, 0.0, 1.0);
+            return slerp_between(start_q, goal_q, t);
+        }
+        return orientation_from_path_index(coords, idx);
     }
 
     geometry_msgs::msg::Quaternion orientation_from_path_index(
@@ -527,6 +552,28 @@ class N6dPlanner : public rclcpp::Node {
         q.z = quat.z();
         q.w = quat.w();
         return q;
+    }
+
+    geometry_msgs::msg::Quaternion slerp_between(const geometry_msgs::msg::Quaternion& start,
+                                                 const geometry_msgs::msg::Quaternion& goal,
+                                                 double t) const {
+        geometry_msgs::msg::Quaternion out;
+        tf2::Quaternion qs(start.x, start.y, start.z, start.w);
+        tf2::Quaternion qg(goal.x, goal.y, goal.z, goal.w);
+        if (qs.length2() < 1e-8) qs = tf2::Quaternion(0.0, 0.0, 0.0, 1.0);
+        if (qg.length2() < 1e-8) qg = qs;
+        qs.normalize();
+        qg.normalize();
+        if (!std::isfinite(t)) t = 0.0;
+        t = std::clamp(t, 0.0, 1.0);
+        tf2::Quaternion qi = qs.slerp(qg, t);
+        if (qi.length2() < 1e-8) qi = tf2::Quaternion(0.0, 0.0, 0.0, 1.0);
+        else qi.normalize();
+        out.x = qi.x();
+        out.y = qi.y();
+        out.z = qi.z();
+        out.w = qi.w();
+        return out;
     }
 
     // --- Collision / line checks ---
@@ -715,6 +762,7 @@ class N6dPlanner : public rclcpp::Node {
     int max_expansions_{60000};        // Safety limit on A* expansions.
     double line_sample_step_{0.25};    // Step size (m) for straight-line feasibility tests.
     std::string map_frame_{"map"};     // Output frame id.
+    bool slerp_orientation_{false};    // Interpolate orientation with SLERP when true.
     bool debug_markers_{false};        // Whether to publish RViz markers.
     std::string marker_topic_;         // MarkerArray output topic.
 
