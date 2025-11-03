@@ -92,7 +92,7 @@ Parameters are managed via the YAML configuration file.
 | `max_search_range`    | Maximum search distance (m)               | `15.0`                        |
 | `max_expansions`      | A* node expansion limit                   | `60000`                       |
 | `line_sample_step`    | Step size for line feasibility checks (m) | `0.25`                        |
-| `slerp_orientation`   | SLERP interpolate start→goal orientation  | `false`                       |
+| `slerp_orientation`   | SLERP interpolate start→goal orientation  | `true`                       |
 | `debug_markers`       | Enable RViz path visualization                 | `true`                        |
 | `marker_topic`        | MarkerArray topic name                    | `/nav6d/planner/path_markers` |
 
