@@ -8,7 +8,7 @@
 ## Roadmap
 
 * [x] A* path planning over OctoMap voxel grids (position only)
-* [ ] SLERP-based orientation planning along the path
+* [x] SLERP-based orientation planning along the path
 * [ ] PID controller for trajectory tracking
 
 
