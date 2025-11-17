@@ -8,29 +8,30 @@ nav6d:
       cmd_force_topic: /space_cobot/cmd_force  # geometry_msgs/Wrench output
       command_frame: body                      # body frame used by cmd_bridge
       debug_speed_topic: /nav6d/controller/debug/speed               # std_msgs/Float32 scalar speed estimate
+      debug_projected_pose_topic: /nav6d/controller/debug/projected_pose  # Pose on path the robot projects onto
       debug_target_pose_topic: /nav6d/controller/debug/tracked_pose  # Pose being tracked
       debug_error_topic: /nav6d/controller/debug/pose_error          # Twist w/ position/orientation error
 
       # Control loop tuning
       control_rate_hz: 100.0                    # Timer frequency for the PD loop
-      lookahead_distance: 0.75                  # "Carrot" distance along the path (m)
+      lookahead_distance: 0.80                  # "Carrot" distance along the path (m)
       path_reacquire_period: 0.1               # How often we re-project onto the path (s)
       feedforward_speed: 0.1                   # Optional constant speed along the tangent (m/s)
       approach_slowdown_distance: 0.5          # Scale lookahead/feedforward when this close to goal (m)
       velocity_ema_alpha: 0.6                  # EMA blend factor for velocity estimation
       pos_tolerance: 0.25                      # Goal position tolerance (m)
       yaw_tolerance_rad: 0.02                  # Goal yaw tolerance (rad), just using yaw for simplicity
-      max_velocity_mps: 1.0                    # Maximum allowed linear speed before braking (m/s)
-      velocity_brake_gain: 1.0                 # Force gain applied when braking above max velocity
+      max_velocity_mps: 0.15                    # Maximum allowed linear speed before braking (m/s)
+      velocity_brake_gain: 80.0                 # Force gain applied when braking above max velocity
       debug_enabled: true                     # Enable verbose logs and debug publishers
 
       # Linear (xyz) PD gains
-      kp_linear: [45.0, 45.0, 45.0]               # Per-axis KP for xyz position errors
-      kd_linear: [90.0, 90.0, 90.0]               # Per-axis KD for xyz velocity errors
+      kp_linear: [3.0, 3.0, 3.0]               # Per-axis KP for xyz position errors
+      kd_linear: [44.0, 44.0, 44.0]               # Per-axis KD for xyz velocity errors
 
       # Angular (rpy) PD gains
-      kp_angular: [0.5, 0.5, 0.5]              # KP for roll/pitch/yaw quaternion error
-      kd_angular: [0.1, 0.1, 0.1]              # KD acting on angular velocity (IMU)
+      kp_angular: [0.2, 0.2, 0.2]              # KP for roll/pitch/yaw quaternion error
+      kd_angular: [0.5, 0.5, 0.5]              # KD acting on angular velocity (IMU)
 
       # Per-axis saturation limits
       max_force_xyz: [300.0, 300.0, 300.0]        # Force clamp (body frame) [Fx, Fy, Fz]

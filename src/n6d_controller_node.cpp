@@ -78,6 +78,8 @@ class N6dController : public rclcpp::Node {
         debug_enabled_ = declare_parameter("debug_enabled", false);
         debug_speed_topic_ = declare_parameter<std::string>(
             "debug_speed_topic", "/nav6d/controller/debug/speed");
+        debug_projected_pose_topic_ = declare_parameter<std::string>(
+            "debug_projected_pose_topic", "/nav6d/controller/debug/projected_pose");
         debug_target_pose_topic_ = declare_parameter<std::string>(
             "debug_target_pose_topic", "/nav6d/controller/debug/tracked_pose");
         debug_error_topic_ = declare_parameter<std::string>(
@@ -137,6 +139,11 @@ class N6dController : public rclcpp::Node {
             if (!debug_speed_topic_.empty()) {
                 speed_pub_ =
                     create_publisher<std_msgs::msg::Float32>(debug_speed_topic_, 10);
+            }
+            if (!debug_projected_pose_topic_.empty()) {
+                debug_projected_pose_pub_ =
+                    create_publisher<geometry_msgs::msg::PoseStamped>(
+                        debug_projected_pose_topic_, 10);
             }
             debug_target_pose_pub_ =
                 create_publisher<geometry_msgs::msg::PoseStamped>(debug_target_pose_topic_, 10);
@@ -232,7 +239,14 @@ class N6dController : public rclcpp::Node {
         }
         const double s_target = std::min(s_robot + adaptive_lookahead, total_path_length_);
         const PathSample target_sample = sample_path_pose(s_target);
-        const geometry_msgs::msg::Pose& target_pose = target_sample.pose;
+        geometry_msgs::msg::Pose target_pose = target_sample.pose;
+        std::optional<geometry_msgs::msg::Pose> projected_pose;
+        if (path_points_.size() >= 2) {
+            projected_pose = sample_path_pose(s_robot).pose;
+        }
+        if (path_ && !path_->poses.empty()) {
+            target_pose.orientation = path_->poses.back().pose.orientation;
+        }
 
         const std::size_t total_segments = path_points_.size() > 0 ? path_points_.size() - 1 : 0;
 
@@ -313,7 +327,7 @@ class N6dController : public rclcpp::Node {
                 total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(), speed);
         }
 
-        publish_debug_outputs(target_pose, e_pos_w, e_rot, now_time);
+        publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
         if (is_goal_reached(p_w, q_wb)) {
             publish_wrench_zero();
@@ -353,6 +367,7 @@ class N6dController : public rclcpp::Node {
     }
 
     void publish_debug_outputs(const geometry_msgs::msg::Pose& target_pose,
+                               const std::optional<geometry_msgs::msg::Pose>& projected_pose,
                                const tf2::Vector3& pos_error_w,
                                const tf2::Vector3& rot_error_b, const rclcpp::Time& stamp) {
         if (!debug_enabled_) {
@@ -364,6 +379,13 @@ class N6dController : public rclcpp::Node {
             pose_msg.header.frame_id = current_pose_->header.frame_id;
             pose_msg.pose = target_pose;
             debug_target_pose_pub_->publish(pose_msg);
+        }
+        if (debug_projected_pose_pub_ && current_pose_ && projected_pose) {
+            geometry_msgs::msg::PoseStamped pose_msg;
+            pose_msg.header.stamp = stamp;
+            pose_msg.header.frame_id = current_pose_->header.frame_id;
+            pose_msg.pose = *projected_pose;
+            debug_projected_pose_pub_->publish(pose_msg);
         }
         if (debug_error_pub_ && current_pose_) {
             geometry_msgs::msg::TwistStamped error_msg;
@@ -556,6 +578,7 @@ class N6dController : public rclcpp::Node {
     double velocity_brake_gain_{6.0};
     bool debug_enabled_{false};
     std::string debug_speed_topic_{"/nav6d/controller/debug/speed"};
+    std::string debug_projected_pose_topic_{"/nav6d/controller/debug/projected_pose"};
     std::string debug_target_pose_topic_{"/nav6d/controller/debug/tracked_pose"};
     std::string debug_error_topic_{"/nav6d/controller/debug/pose_error"};
 
@@ -571,6 +594,7 @@ class N6dController : public rclcpp::Node {
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Publisher<geometry_msgs::msg::Wrench>::SharedPtr force_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_projected_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_target_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr debug_error_pub_;
 
