@@ -22,6 +22,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "std_msgs/msg/float32.hpp"
 
 namespace {
 // Small helper struct used to store per-axis PD gains.
@@ -75,6 +76,8 @@ class N6dController : public rclcpp::Node {
         max_velocity_mps_ = declare_parameter("max_velocity_mps", 0.0);
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
+        debug_speed_topic_ = declare_parameter<std::string>(
+            "debug_speed_topic", "/nav6d/controller/debug/speed");
         debug_target_pose_topic_ = declare_parameter<std::string>(
             "debug_target_pose_topic", "/nav6d/controller/debug/tracked_pose");
         debug_error_topic_ = declare_parameter<std::string>(
@@ -131,6 +134,10 @@ class N6dController : public rclcpp::Node {
     void init_publishers() {
         force_pub_ = create_publisher<geometry_msgs::msg::Wrench>(cmd_force_topic_, 10);
         if (debug_enabled_) {
+            if (!debug_speed_topic_.empty()) {
+                speed_pub_ =
+                    create_publisher<std_msgs::msg::Float32>(debug_speed_topic_, 10);
+            }
             debug_target_pose_pub_ =
                 create_publisher<geometry_msgs::msg::PoseStamped>(debug_target_pose_topic_, 10);
             debug_error_pub_ =
@@ -200,6 +207,7 @@ class N6dController : public rclcpp::Node {
             }
             vel_world_ = v_est_w;
             have_vel_ = true;
+            publish_speed(v_est_w.length(), now_time);
         }
         last_position_ = p_w;
 
@@ -333,6 +341,15 @@ class N6dController : public rclcpp::Node {
     void publish_wrench_zero() {
         geometry_msgs::msg::Wrench wrench;
         force_pub_->publish(wrench);
+    }
+
+    void publish_speed(double speed, const rclcpp::Time& stamp) {
+        if (!debug_enabled_ || !speed_pub_) {
+            return;
+        }
+        std_msgs::msg::Float32 msg;
+        msg.data = static_cast<float>(speed);
+        speed_pub_->publish(msg);
     }
 
     void publish_debug_outputs(const geometry_msgs::msg::Pose& target_pose,
@@ -538,6 +555,7 @@ class N6dController : public rclcpp::Node {
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool debug_enabled_{false};
+    std::string debug_speed_topic_{"/nav6d/controller/debug/speed"};
     std::string debug_target_pose_topic_{"/nav6d/controller/debug/tracked_pose"};
     std::string debug_error_topic_{"/nav6d/controller/debug/pose_error"};
 
@@ -552,6 +570,7 @@ class N6dController : public rclcpp::Node {
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Publisher<geometry_msgs::msg::Wrench>::SharedPtr force_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_target_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr debug_error_pub_;
 
