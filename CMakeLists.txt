@@ -8,6 +8,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(octomap REQUIRED)
 find_package(octomap_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -27,6 +28,21 @@ ament_target_dependencies(
 
 install(
   TARGETS n6d_planner
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(n6d_controller src/n6d_controller_node.cpp)
+ament_target_dependencies(
+  n6d_controller
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  tf2
+)
+
+install(
+  TARGETS n6d_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
