@@ -63,6 +63,7 @@ class N6dController : public rclcpp::Node {
         imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
         cmd_force_topic_ = declare_parameter<std::string>("cmd_force_topic", "/space_cobot/cmd_force");
         command_frame_ = declare_parameter<std::string>("command_frame", "body");
+        use_goal_orientation_ = declare_parameter<bool>("use_goal_orientation", false);
 
         // Control knobs
         control_rate_hz_ = declare_parameter("control_rate_hz", 50.0);
@@ -230,10 +231,17 @@ class N6dController : public rclcpp::Node {
         }
 
         const double s_remaining = std::max(0.0, total_path_length_ - s_robot);
+        double goal_distance = s_remaining;
+        if (path_ && !path_->poses.empty()) {
+            const auto& goal_pos = path_->poses.back().pose.position;
+            const tf2::Vector3 p_goal(goal_pos.x, goal_pos.y, goal_pos.z);
+            goal_distance = std::min(goal_distance, (p_w - p_goal).length());
+        }
         double adaptive_lookahead = lookahead_distance_;
         double ff_speed = feedforward_speed_;
-        if (approach_slowdown_distance_ > 1e-3 && s_remaining < approach_slowdown_distance_) {
-            const double scale = std::clamp(s_remaining / approach_slowdown_distance_, 0.0, 1.0);
+        if (approach_slowdown_distance_ > 1e-3 && goal_distance < approach_slowdown_distance_) {
+            const double scale =
+                std::clamp(goal_distance / approach_slowdown_distance_, 0.0, 1.0);
             adaptive_lookahead = std::max(0.02, lookahead_distance_ * scale);
             ff_speed *= scale;
         }
@@ -244,7 +252,7 @@ class N6dController : public rclcpp::Node {
         if (path_points_.size() >= 2) {
             projected_pose = sample_path_pose(s_robot).pose;
         }
-        if (path_ && !path_->poses.empty()) {
+        if (use_goal_orientation_ && path_ && !path_->poses.empty()) {
             target_pose.orientation = path_->poses.back().pose.orientation;
         }
 
@@ -578,6 +586,7 @@ class N6dController : public rclcpp::Node {
     double yaw_tolerance_rad_{0.08};
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
+    bool use_goal_orientation_{false};
     bool debug_enabled_{false};
     std::string debug_speed_topic_{"/nav6d/controller/debug/linear_speed"};
     std::string debug_projected_pose_topic_{"/nav6d/controller/debug/path_projection"};
