@@ -77,13 +77,13 @@ class N6dController : public rclcpp::Node {
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
         debug_speed_topic_ = declare_parameter<std::string>(
-            "debug_speed_topic", "/nav6d/controller/debug/speed");
+            "debug_speed_topic", "/nav6d/controller/debug/linear_speed");
         debug_projected_pose_topic_ = declare_parameter<std::string>(
-            "debug_projected_pose_topic", "/nav6d/controller/debug/projected_pose");
+            "debug_projected_pose_topic", "/nav6d/controller/debug/path_projection");
         debug_target_pose_topic_ = declare_parameter<std::string>(
-            "debug_target_pose_topic", "/nav6d/controller/debug/tracked_pose");
+            "debug_target_pose_topic", "/nav6d/controller/debug/carrot_pose");
         debug_error_topic_ = declare_parameter<std::string>(
-            "debug_error_topic", "/nav6d/controller/debug/pose_error");
+            "debug_error_topic", "/nav6d/controller/debug/control_error");
 
         // Linear (xyz) gains
         const std::vector<double> kp_lin =
@@ -330,6 +330,8 @@ class N6dController : public rclcpp::Node {
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
         if (is_goal_reached(p_w, q_wb)) {
+            RCLCPP_INFO(get_logger(), "Goal reached. Holding position at s=%.2f/%.2f.", s_robot,
+                        total_path_length_);
             publish_wrench_zero();
             return;
         }
@@ -577,10 +579,10 @@ class N6dController : public rclcpp::Node {
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool debug_enabled_{false};
-    std::string debug_speed_topic_{"/nav6d/controller/debug/speed"};
-    std::string debug_projected_pose_topic_{"/nav6d/controller/debug/projected_pose"};
-    std::string debug_target_pose_topic_{"/nav6d/controller/debug/tracked_pose"};
-    std::string debug_error_topic_{"/nav6d/controller/debug/pose_error"};
+    std::string debug_speed_topic_{"/nav6d/controller/debug/linear_speed"};
+    std::string debug_projected_pose_topic_{"/nav6d/controller/debug/path_projection"};
+    std::string debug_target_pose_topic_{"/nav6d/controller/debug/carrot_pose"};
+    std::string debug_error_topic_{"/nav6d/controller/debug/control_error"};
 
     PDGains gains_pos_{};
     PDGains gains_att_{};
