@@ -202,10 +202,6 @@ are:
 4. `max_linear_velocity_xyz` / `max_force_xyz` and `max_angular_velocity_rpy` / `max_torque_rpy`:
    per-axis clamps that keep the controller outputs within what the vehicle can track.
 
-Because the velocity controller is now the default, make sure downstream bridges (e.g. `cmd_bridge`)
-listen on `/space_cobot/cmd_vel`. Switch to `/space_cobot/cmd_force` only when using actuators
-that natively consume wrenches.
-
 ## Example Usage
 
 1. Start an OctoMap server (or another compatible map publisher):
@@ -240,20 +236,3 @@ that natively consume wrenches.
    * A `MarkerArray` display on `/nav6d/planner/path_markers`
    * Fixed frame: `map`
 
-
-## Node Overview
-
-`n6d_planner` performs:
-
-* Straight-line collision checking between start and goal
-* Fallback A* pathfinding in 3D voxel space (26-connected neighborhood)
-* Collision inflation using the configured `robot_radius`
-* Optional debug visualization in RViz
-* Deferred goal and map update handling while planning
-
-Planning performance statistics are printed to the console at each run.
-
-`n6d_velocity_controller` (default) projects the robot onto the generated path, selects a
-lookahead pose, closes the loop with a 6-DoF PD law, and publishes body-frame twist commands on
-`/space_cobot/cmd_vel`. `n6d_force_controller` shares this logic but publishes wrenches on
-`/space_cobot/cmd_force` for setups that expect forces/torques instead of velocities.
