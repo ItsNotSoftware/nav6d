@@ -31,9 +31,9 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
-add_executable(n6d_controller src/n6d_controller_node.cpp)
+add_executable(n6d_force_controller src/n6d_force_controller_node.cpp)
 ament_target_dependencies(
-  n6d_controller
+  n6d_force_controller
   rclcpp
   geometry_msgs
   nav_msgs
@@ -42,7 +42,22 @@ ament_target_dependencies(
 )
 
 install(
-  TARGETS n6d_controller
+  TARGETS n6d_force_controller
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+add_executable(n6d_velocity_controller src/n6d_velocity_controller_node.cpp)
+ament_target_dependencies(
+  n6d_velocity_controller
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  sensor_msgs
+  tf2
+)
+
+install(
+  TARGETS n6d_velocity_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
