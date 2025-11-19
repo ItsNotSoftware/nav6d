@@ -1,6 +1,11 @@
-// n6d_planner_node.cpp
-//
-// ROS2 node that computes 3D collision-free paths with an A* and SLERP on an OctoMap.
+/* n6d_planner_node.cpp
+ *
+ * ROS 2 node that generates 3D collision-free paths from OctoMap data. It:
+ *   - Loads configurable topics/parameters for integration into various systems.
+ *   - Subscribes to map/pose/goal updates, caching the latest messages.
+ *   - Runs an A* search (with optional SLERP orientation) when a new goal arrives.
+ *   - Publishes nav_msgs/Path messages plus optional RViz markers.
+ */
 
 #include <algorithm>
 #include <cmath>
@@ -75,10 +80,13 @@ struct QueueCompare {
 };
 }  // namespace
 
-// ROS 2 node that hosts the nav6d A*-based local planner.
+/* ROS 2 node that hosts the nav6d A*-based local planner: constructor wires parameters + ROS
+ * interfaces, callbacks cache map/pose/goal messages, and plan_latest_goal() runs A* + publishes
+ * the resulting nav_msgs/Path plus markers.
+ */
 class N6dPlanner : public rclcpp::Node {
    public:
-    // Declare parameters, wire subscriptions/publishers, and announce readiness.
+    // Constructor declares parameters, wires ROS interfaces, and announces readiness.
     N6dPlanner() : rclcpp::Node("n6d_planner") {
         // Parameters with defaults
         const std::string map_topic = declare_parameter<std::string>("map_topic", "/octomap_full");
@@ -132,7 +140,10 @@ class N6dPlanner : public rclcpp::Node {
     }
 
    private:
-    // --- Subscriptions ---
+    // --- Subscriptions / cached inputs ---
+    // map_callback caches OctoMap messages and defers updates while planning.
+    // pose_callback tracks the latest robot pose.
+    // goal_callback records requested goals and triggers planning when possible.
     // Cache incoming OctoMap updates and trigger re-planning when idle.
     void map_callback(const octomap_msgs::msg::Octomap::SharedPtr msg) {
         if (planning_in_progress_) {
@@ -142,12 +153,12 @@ class N6dPlanner : public rclcpp::Node {
         update_octomap_from_message(msg);
     }
 
-    // Track the robot pose; planning is triggered only when both pose and goal are available.
+    // Track the robot pose; planning triggers only when both pose and goal exist.
     void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         current_pose_ = *msg;  // store latest; does NOT trigger planning
     }
 
-    // Receive user goals and kick off the planner if the system is idle.
+    // Receive user goals and kick off the planner if idle.
     void goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         pending_goal_ = *msg;  // always keep the latest requested goal
         RCLCPP_INFO(get_logger(), "New goal received: (%.2f, %.2f, %.2f).", msg->pose.position.x,
@@ -160,9 +171,7 @@ class N6dPlanner : public rclcpp::Node {
         plan_latest_goal();  // trigger immediately
     }
 
-    // --- Planning orchestration (goal-triggered only) ---
-    // Validate inputs, run the planner, and publish the resulting path/markers.
-    // Automatically re-invoked when a deferred map or goal update was queued.
+    // Validate inputs, run the planner, and publish results (goal-triggered only).
     void plan_latest_goal() {
         if (!pending_goal_) return;
 
@@ -219,9 +228,7 @@ class N6dPlanner : public rclcpp::Node {
         }
     }
 
-    // --- Map handling ---
-    // Convert the incoming message into an OcTree and cache it for downstream queries.
-    // On the first map update this also back-fills the line sampling resolution.
+    // Convert the incoming OctoMap message and cache for collision checks (updates line step).
     void update_octomap_from_message(const octomap_msgs::msg::Octomap::SharedPtr& msg) {
         std::unique_ptr<octomap::AbstractOcTree> abstract(octomap_msgs::msgToMap(*msg));
 
@@ -244,9 +251,7 @@ class N6dPlanner : public rclcpp::Node {
         }
     }
 
-    // --- Core planning ---
-    // Main planning entry point that runs a straight-line check followed by A* when needed.
-    // path_out is filled with the planned waypoint path on success.
+    // Main planning entry point: straight-line feasibility check followed by A* if needed.
     bool plan_path(nav_msgs::msg::Path& path_out) {
         const auto& start_p = current_pose_->pose.position;
         const auto& goal_p = goal_pose_->pose.position;
@@ -313,10 +318,9 @@ class N6dPlanner : public rclcpp::Node {
         return true;
     }
 
-    // OctoMap A* expansion using 26-connected voxel moves and the Euclidean heuristic.
-    // start_key/goal_key are the discrete voxel keys nearest to the robot and goal.
-    // start_coord/goal_coord are the metric coordinates of those voxels.
-    // result_path is populated with the ordered OcTree keys forming the final route.
+    // OctoMap A* expansion using 26-connected voxel moves and a Euclidean heuristic. start_key /
+    // goal_key reference the discrete voxels nearest the robot/goal, and result_path stores the
+    // ordered OcTree keys that form the final route.
     bool perform_a_star(const octomap::OcTreeKey& start_key, const octomap::OcTreeKey& goal_key,
                         const octomap::point3d& start_coord, const octomap::point3d& goal_coord,
                         std::vector<octomap::OcTreeKey>& result_path) {
@@ -329,6 +333,7 @@ class N6dPlanner : public rclcpp::Node {
         std::vector<octomap::point3d> dirs;
         dirs.reserve(26);
         const float step = static_cast<float>(res);
+        /* Enumerate all 26-connected neighbor directions (scaled later by resolution). */
         for (int dx = -1; dx <= 1; ++dx)
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dz = -1; dz <= 1; ++dz)
@@ -351,6 +356,7 @@ class N6dPlanner : public rclcpp::Node {
 
         // Main A* expansion loop.
         std::size_t expansions = 0;
+        /* Expand nodes until the open list is exhausted or the goal is found. */
         while (!open.empty()) {
             // Enforce a hard limit on expansions to prevent pathological cases.
             if (expansions++ > static_cast<std::size_t>(max_expansions_)) {
@@ -374,6 +380,7 @@ class N6dPlanner : public rclcpp::Node {
             closed.insert(cur.id);
 
             // Expand neighbors
+            /* Visit each neighbor direction for the current voxel. */
             for (const auto& d : dirs) {
                 const octomap::point3d nb_c = cur_c + d;
 
@@ -436,9 +443,11 @@ class N6dPlanner : public rclcpp::Node {
         if (!keys.empty()) {
             std::vector<octomap::point3d> coords;
             coords.reserve(keys.size());
+            /* Convert each discrete key back into a metric coordinate. */
             for (const auto& k : keys) coords.push_back(key_to_coord(*octree_, k));
 
             path.poses.reserve(coords.size());
+            /* Populate PoseStamped entries (with SLERP orientation if enabled). */
             for (std::size_t i = 0; i < coords.size(); ++i) {
                 geometry_msgs::msg::PoseStamped p;
                 p.header = path.header;
@@ -467,6 +476,7 @@ class N6dPlanner : public rclcpp::Node {
         const int steps = std::max(2, static_cast<int>(std::ceil(dist / step)));
         std::vector<octomap::point3d> coords;
         coords.reserve(static_cast<std::size_t>(steps + 1));
+        /* Sample points along the straight segment for collision checking + path output. */
         for (int i = 0; i <= steps; ++i) {
             const double t = static_cast<double>(i) / static_cast<double>(steps);
             const auto pnt = a + (b - a) * static_cast<float>(t);
@@ -475,6 +485,7 @@ class N6dPlanner : public rclcpp::Node {
 
         // Interpolate waypoints along the segment.
         path.poses.reserve(coords.size());
+        /* Convert samples into PoseStamped messages with appropriate orientation. */
         for (std::size_t i = 0; i < coords.size(); ++i) {
             geometry_msgs::msg::PoseStamped p;
             p.header = path.header;
@@ -577,13 +588,14 @@ class N6dPlanner : public rclcpp::Node {
     }
 
     // --- Collision / line checks ---
-    // Brute-force collision check that dilates occupied voxels with a configurable radius.
+    // Brute-force collision checks that dilate occupied voxels with a configurable radius.
     bool is_collision_free(const octomap::point3d& p) const {
         if (!octree_) return false;
         const double res = octree_->getResolution();
         const int r_cells = std::max(1, static_cast<int>(std::ceil(robot_radius_ / res)));
 
         // Check all voxels within the robot radius.
+        /* Iterate over every voxel inside the inflated radius and check occupancy. */
         for (int dx = -r_cells; dx <= r_cells; ++dx)
             for (int dy = -r_cells; dy <= r_cells; ++dy)
                 for (int dz = -r_cells; dz <= r_cells; ++dz) {
@@ -657,11 +669,13 @@ class N6dPlanner : public rclcpp::Node {
         line.color.r = 0.0F;
         line.color.g = 1.0F;
         line.color.b = 0.3F;
+        // Add every path waypoint to the line strip.
         for (const auto& ps : path.poses) line.points.emplace_back(ps.pose.position);
         arr.markers.push_back(line);
 
         const std::size_t waypoint_count = path.poses.size();
         const int waypoint_id_base = 10;
+        // Emit small cubes for each waypoint along the path.
         for (std::size_t i = 0; i < waypoint_count; ++i) {
             visualization_msgs::msg::Marker box;
             box.header = path.header;
@@ -734,8 +748,7 @@ class N6dPlanner : public rclcpp::Node {
         marker_pub_->publish(arr);
     }
 
-    // --- Members ---
-    // Subscription to streamed OctoMap messages.
+    // --- Members: subscriptions/publishers plus cached state used across planning cycles.
     rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr map_sub_;
     // Latest robot pose sample.
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;

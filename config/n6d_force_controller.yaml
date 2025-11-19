@@ -1,17 +1,16 @@
 nav6d:
-  n6d_controller:
+  n6d_force_controller:
     ros__parameters:
       # Topic wiring
       path_topic: /nav6d/planner/path          # nav_msgs/Path to track
       pose_topic: /space_cobot/pose            # geometry_msgs/PoseStamped pose estimate
       imu_topic: /imu/data                     # sensor_msgs/Imu angular velocity
       cmd_force_topic: /space_cobot/cmd_force  # geometry_msgs/Wrench output
-      command_frame: body                      # body frame used by cmd_bridge
       use_goal_orientation: false              # If true, always target the final goal orientation
-      debug_speed_topic: /nav6d/controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
-      debug_projected_pose_topic: /nav6d/controller/debug/path_projection  # Pose on path the robot projects onto
-      debug_target_pose_topic: /nav6d/controller/debug/carrot_pose   # Lookahead pose the controller tracks
-      debug_error_topic: /nav6d/controller/debug/control_error       # Twist w/ position/orientation error
+      debug_speed_topic: /nav6d/force_controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
+      debug_projected_pose_topic: /nav6d/force_controller/debug/path_projection  # Pose on path the robot projects onto
+      debug_target_pose_topic: /nav6d/force_controller/debug/carrot_pose   # Lookahead pose the controller tracks
+      debug_error_topic: /nav6d/force_controller/debug/control_error       # Twist w/ position/orientation error
 
       # Control loop tuning
       control_rate_hz: 100.0                    # Timer frequency for the PD loop

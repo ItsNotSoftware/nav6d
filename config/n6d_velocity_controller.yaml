@@ -1,0 +1,33 @@
+nav6d:
+  n6d_velocity_controller:
+    ros__parameters:
+      # Topic wiring
+      path_topic: /nav6d/planner/path        # nav_msgs/Path to track
+      pose_topic: /space_cobot/pose          # geometry_msgs/PoseStamped pose estimate
+      imu_topic: /imu/data                   # sensor_msgs/Imu angular velocity
+      cmd_velocity_topic: /space_cobot/cmd_vel  # geometry_msgs/Twist output
+      debug_speed_topic: /nav6d/velocity_controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
+      debug_projected_pose_topic: /nav6d/velocity_controller/debug/path_projection  # Pose on path the robot projects onto
+      debug_target_pose_topic: /nav6d/velocity_controller/debug/carrot_pose   # Lookahead pose the controller tracks
+      debug_error_topic: /nav6d/velocity_controller/debug/control_error       # Twist w/ position/orientation error
+
+      # Core control knobs (velocity controller keeps the rest of the defaults)
+      control_rate_hz: 100.0                 # Timer frequency for the PD loop
+      lookahead_distance: 0.7                # "Carrot" distance along the path (m)
+      path_reacquire_period: 0.10            # How often we re-project onto the path (s)
+      approach_slowdown_distance: 0.5        # Shrink lookahead when close to the goal (m)
+      pos_tolerance: 0.12                    # Goal position tolerance (m)
+      yaw_tolerance_rad: 0.05                # Goal yaw tolerance (rad)
+      debug_enabled: false                   # Disable verbose logs/debug publishers
+
+      # Linear (xyz) PD gains
+      kp_linear: [1.5, 1.5, 1.2]
+      kd_linear: [0.8, 0.8, 0.7]
+
+      # Angular (rpy) PD gains
+      kp_angular: [2.0, 2.0, 2.0]
+      kd_angular: [0.3, 0.3, 0.3]
+
+      # Body-frame twist saturation
+      max_linear_velocity_xyz: [0.6, 0.6, 0.4]
+      max_angular_velocity_rpy: [0.6, 0.6, 0.6]

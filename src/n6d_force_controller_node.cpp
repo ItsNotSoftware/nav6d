@@ -1,7 +1,8 @@
-// n6d_controller_node.cpp
-//
-// ROS 2 node that consumes a nav6d path and applies a 6-DOF PD controller to
-// generate body-frame wrench commands for the cmd_bridge.
+/* n6d_force_controller_node.cpp
+ *
+ * Provides the wrench-tracking variant of the nav6d controller. It subscribes to planner paths,
+ * pose, and IMU data, then runs a PD loop to publish body-frame wrenches toward a carrot pose.
+ */
 
 #include <algorithm>
 #include <chrono>
@@ -39,30 +40,29 @@ tf2::Vector3 clamp_each(const tf2::Vector3& value, const tf2::Vector3& limits) {
 }
 }  // namespace
 
-// ROS 2 node that converts a nav_msgs/Path into wrench commands.
-class N6dController : public rclcpp::Node {
+// Converts a nav_msgs/Path into wrench commands with the same flow as the velocity controller.
+class N6dForceController : public rclcpp::Node {
    public:
-    N6dController() : rclcpp::Node("n6d_controller") {
+    // Constructor wires up parameters, subscriptions, publishers, and timer wiring.
+    N6dForceController() : rclcpp::Node("n6d_force_controller") {
         declare_parameters();
         init_subscriptions();
         init_publishers();
         init_timer();
 
         RCLCPP_INFO(get_logger(),
-                    "n6d_controller ready. path=%s pose=%s imu=%s -> force=%s (frame=%s)",
-                    path_topic_.c_str(), pose_topic_.c_str(), imu_topic_.c_str(), cmd_force_topic_.c_str(),
-                    command_frame_.c_str());
+                    "n6d_force_controller ready. path=%s pose=%s imu=%s -> force=%s (frame=body)",
+                    path_topic_.c_str(), pose_topic_.c_str(), imu_topic_.c_str(), cmd_force_topic_.c_str());
     }
 
    private:
-    // --- Parameter loading -------------------------------------------------
+    // Declare topics, gains, limits, and other controller parameters.
     void declare_parameters() {
         // Topic wiring
         path_topic_ = declare_parameter<std::string>("path_topic", "/nav6d/planner/path");
         pose_topic_ = declare_parameter<std::string>("pose_topic", "/space_cobot/pose");
         imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
         cmd_force_topic_ = declare_parameter<std::string>("cmd_force_topic", "/space_cobot/cmd_force");
-        command_frame_ = declare_parameter<std::string>("command_frame", "body");
         use_goal_orientation_ = declare_parameter<bool>("use_goal_orientation", false);
 
         // Control knobs
@@ -78,13 +78,13 @@ class N6dController : public rclcpp::Node {
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
         debug_speed_topic_ = declare_parameter<std::string>(
-            "debug_speed_topic", "/nav6d/controller/debug/linear_speed");
+            "debug_speed_topic", "/nav6d/force_controller/debug/linear_speed");
         debug_projected_pose_topic_ = declare_parameter<std::string>(
-            "debug_projected_pose_topic", "/nav6d/controller/debug/path_projection");
+            "debug_projected_pose_topic", "/nav6d/force_controller/debug/path_projection");
         debug_target_pose_topic_ = declare_parameter<std::string>(
-            "debug_target_pose_topic", "/nav6d/controller/debug/carrot_pose");
+            "debug_target_pose_topic", "/nav6d/force_controller/debug/carrot_pose");
         debug_error_topic_ = declare_parameter<std::string>(
-            "debug_error_topic", "/nav6d/controller/debug/control_error");
+            "debug_error_topic", "/nav6d/force_controller/debug/control_error");
 
         // Linear (xyz) gains
         const std::vector<double> kp_lin =
@@ -103,6 +103,7 @@ class N6dController : public rclcpp::Node {
         const std::vector<double> max_torque =
             declare_parameter<std::vector<double>>("max_torque_rpy", {8.0, 8.0, 8.0});
 
+        // Copy vector parameters into fixed-size gain arrays.
         for (int axis = 0; axis < 3; ++axis) {
             gains_pos_.kp[axis] = axis < static_cast<int>(kp_lin.size()) ? kp_lin[axis] : 0.0;
             gains_pos_.kd[axis] = axis < static_cast<int>(kd_lin.size()) ? kd_lin[axis] : 0.0;
@@ -119,21 +120,22 @@ class N6dController : public rclcpp::Node {
                                         pick_limit(max_torque, 2));
     }
 
-    // --- ROS interface wiring ----------------------------------------------
+    // Wire subscriptions, publishers, and control timer (mirrors the velocity controller).
     void init_subscriptions() {
         path_sub_ =
             create_subscription<nav_msgs::msg::Path>(path_topic_, 10,
-                                                     std::bind(&N6dController::handle_path, this,
+                                                     std::bind(&N6dForceController::handle_path, this,
                                                                std::placeholders::_1));
         pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
             pose_topic_, rclcpp::SensorDataQoS(),
-            std::bind(&N6dController::handle_pose, this, std::placeholders::_1));
+            std::bind(&N6dForceController::handle_pose, this, std::placeholders::_1));
         imu_sub_ =
             create_subscription<sensor_msgs::msg::Imu>(imu_topic_, rclcpp::SensorDataQoS(),
-                                                       std::bind(&N6dController::handle_imu, this,
+                                                       std::bind(&N6dForceController::handle_imu, this,
                                                                  std::placeholders::_1));
     }
 
+    // Create wrench and debug publishers.
     void init_publishers() {
         force_pub_ = create_publisher<geometry_msgs::msg::Wrench>(cmd_force_topic_, 10);
         if (debug_enabled_) {
@@ -153,14 +155,15 @@ class N6dController : public rclcpp::Node {
         }
     }
 
+    // Start the periodic control loop timer.
     void init_timer() {
         const double clamped_rate = std::max(1.0, control_rate_hz_);
         const std::chrono::duration<double> period(1.0 / clamped_rate);
         control_timer_ =
-            create_wall_timer(period, std::bind(&N6dController::control_step, this));
+            create_wall_timer(period, std::bind(&N6dForceController::control_step, this));
     }
 
-    // --- Subscription callbacks --------------------------------------------
+    // Cache latest path/pose/IMU messages so the control loop can run at its own rate.
     void handle_path(const nav_msgs::msg::Path::SharedPtr msg) {
         if (!msg || msg->poses.empty()) {
             RCLCPP_WARN(get_logger(), "Received empty path; holding position.");
@@ -176,15 +179,20 @@ class N6dController : public rclcpp::Node {
                     total_path_length_);
     }
 
+    // Cache the newest pose sample.
     void handle_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         current_pose_ = *msg;
     }
 
+    // Cache the latest IMU sample for angular velocity feedback.
     void handle_imu(const sensor_msgs::msg::Imu::SharedPtr msg) {
         last_imu_ = *msg;
     }
 
-    // --- Control loop ------------------------------------------------------
+    /* Main control loop: mirrors velocity controller but outputs wrenches.
+     * Steps include guarding prerequisites, estimating velocity, projecting onto the path,
+     * running PD in both translation/rotation, clamping, and publishing the wrench.
+     */
     void control_step() {
         if (!ready_for_control()) {
             publish_wrench_zero();
@@ -239,6 +247,7 @@ class N6dController : public rclcpp::Node {
         }
         double adaptive_lookahead = lookahead_distance_;
         double ff_speed = feedforward_speed_;
+        // Scale lookahead and feedforward as we approach the goal.
         if (approach_slowdown_distance_ > 1e-3 && goal_distance < approach_slowdown_distance_) {
             const double scale =
                 std::clamp(goal_distance / approach_slowdown_distance_, 0.0, 1.0);
@@ -252,6 +261,7 @@ class N6dController : public rclcpp::Node {
         if (path_points_.size() >= 2) {
             projected_pose = sample_path_pose(s_robot).pose;
         }
+        // Optionally force the carrot orientation to match the final goal pose.
         if (use_goal_orientation_ && path_ && !path_->poses.empty()) {
             target_pose.orientation = path_->poses.back().pose.orientation;
         }
@@ -276,7 +286,7 @@ class N6dController : public rclcpp::Node {
         q_wb.normalize();
         tf2::Matrix3x3 R_wb(q_wb);
 
-        // --- Linear PD in world, then rotate to body -----------------------
+        // Linear PD in world frame; rotate results to body frame.
         tf2::Vector3 e_pos_w = p_des - p_w;
         tf2::Vector3 e_vel_w = v_des - v_est_w;
         tf2::Vector3 F_w(gains_pos_.kp[0] * e_pos_w.x() + gains_pos_.kd[0] * e_vel_w.x(),
@@ -292,7 +302,7 @@ class N6dController : public rclcpp::Node {
         }
         tf2::Vector3 F_b = R_wb.transpose() * F_w;
 
-        // --- Attitude PD in body frame -------------------------------------
+        // Attitude PD in body frame.
         tf2::Quaternion q_wb_des(target_pose.orientation.x, target_pose.orientation.y,
                                  target_pose.orientation.z, target_pose.orientation.w);
         if (q_wb_des.length2() < 1e-12) {
@@ -347,10 +357,12 @@ class N6dController : public rclcpp::Node {
         publish_wrench(F_b, M_b);
     }
 
+    // Ensure we have a valid path and pose before controlling.
     bool ready_for_control() const {
         return path_ && current_pose_ && !path_->poses.empty();
     }
 
+    // Publish the computed body-frame wrench.
     void publish_wrench(const tf2::Vector3& force_b, const tf2::Vector3& torque_b) {
         geometry_msgs::msg::Wrench wrench;
         wrench.force.x = force_b.x();
@@ -362,11 +374,13 @@ class N6dController : public rclcpp::Node {
         force_pub_->publish(wrench);
     }
 
+    // Publish a zero wrench to hold position.
     void publish_wrench_zero() {
         geometry_msgs::msg::Wrench wrench;
         force_pub_->publish(wrench);
     }
 
+    // Publish scalar speed debug info when enabled.
     void publish_speed(double speed, const rclcpp::Time& stamp) {
         if (!debug_enabled_ || !speed_pub_) {
             return;
@@ -376,6 +390,7 @@ class N6dController : public rclcpp::Node {
         speed_pub_->publish(msg);
     }
 
+    // Publish carrot pose, projected pose, and error vectors for debugging.
     void publish_debug_outputs(const geometry_msgs::msg::Pose& target_pose,
                                const std::optional<geometry_msgs::msg::Pose>& projected_pose,
                                const tf2::Vector3& pos_error_w,
@@ -411,7 +426,7 @@ class N6dController : public rclcpp::Node {
         }
     }
 
-    // --- Path utilities ----------------------------------------------------
+    // Helper functions for path preprocessing, projection, and sampling.
     void preprocess_path() {
         path_points_.clear();
         cumulative_lengths_.clear();
@@ -425,6 +440,7 @@ class N6dController : public rclcpp::Node {
         path_points_.reserve(poses.size());
         cumulative_lengths_.reserve(poses.size());
 
+        /* Walk the path to extract points and cumulative arc lengths for fast projection later. */
         for (std::size_t i = 0; i < poses.size(); ++i) {
             const auto& pos = poses[i].pose.position;
             path_points_.emplace_back(pos.x, pos.y, pos.z);
@@ -440,6 +456,7 @@ class N6dController : public rclcpp::Node {
         }
     }
 
+    // Project a point onto the cached path and return arc length info.
     std::tuple<double, std::size_t, double> project_onto_path(const tf2::Vector3& p) const {
         if (path_points_.size() < 2) {
             return {0.0, 0, 0.0};
@@ -450,6 +467,7 @@ class N6dController : public rclcpp::Node {
         std::size_t best_idx = 0;
         double best_t = 0.0;
 
+        /* Examine each segment and remember the closest projection + arc length. */
         for (std::size_t i = 0; i + 1 < path_points_.size(); ++i) {
             const tf2::Vector3 a = path_points_[i];
             const tf2::Vector3 b = path_points_[i + 1];
@@ -480,6 +498,7 @@ class N6dController : public rclcpp::Node {
         double segment_t{0.0};
     };
 
+    // Sample a pose at arc length s along the path.
     PathSample sample_path_pose(double s) const {
         PathSample sample;
         if (!path_ || path_points_.size() < 2) {
@@ -488,6 +507,7 @@ class N6dController : public rclcpp::Node {
         s = std::clamp(s, 0.0, total_path_length_);
 
         std::size_t i = 0;
+        /* Advance to the segment containing arc length s. */
         while (i + 1 < cumulative_lengths_.size() && cumulative_lengths_[i + 1] < s - 1e-9) {
             ++i;
         }
@@ -526,6 +546,7 @@ class N6dController : public rclcpp::Node {
         return sample;
     }
 
+    // Compute the normalized tangent direction at arc length s.
     tf2::Vector3 path_tangent_at(double s) const {
         if (path_points_.size() < 2) {
             return tf2::Vector3(0, 0, 0);
@@ -533,6 +554,7 @@ class N6dController : public rclcpp::Node {
         s = std::clamp(s, 0.0, total_path_length_);
 
         std::size_t i = 0;
+        /* Move to the segment covering the requested arc length. */
         while (i + 1 < cumulative_lengths_.size() && cumulative_lengths_[i + 1] < s - 1e-9) {
             ++i;
         }
@@ -544,6 +566,7 @@ class N6dController : public rclcpp::Node {
         return diff * (1.0 / norm);
     }
 
+    // Check if current pose is within configured tolerances of the goal.
     bool is_goal_reached(const tf2::Vector3& p_w, const tf2::Quaternion& q_wb) const {
         if (!path_ || path_->poses.empty()) {
             return false;
@@ -567,13 +590,12 @@ class N6dController : public rclcpp::Node {
         return std::abs(yaw_err) < yaw_tolerance_rad_;
     }
 
-    // --- Members -----------------------------------------------------------
+    // Cached configuration, ROS interfaces, and state.
     // Topics
     std::string path_topic_;
     std::string pose_topic_;
     std::string imu_topic_;
     std::string cmd_force_topic_;
-    std::string command_frame_;
 
     // Parameters
     double control_rate_hz_{50.0};
@@ -588,10 +610,10 @@ class N6dController : public rclcpp::Node {
     double velocity_brake_gain_{6.0};
     bool use_goal_orientation_{false};
     bool debug_enabled_{false};
-    std::string debug_speed_topic_{"/nav6d/controller/debug/linear_speed"};
-    std::string debug_projected_pose_topic_{"/nav6d/controller/debug/path_projection"};
-    std::string debug_target_pose_topic_{"/nav6d/controller/debug/carrot_pose"};
-    std::string debug_error_topic_{"/nav6d/controller/debug/control_error"};
+    std::string debug_speed_topic_{"/nav6d/force_controller/debug/linear_speed"};
+    std::string debug_projected_pose_topic_{"/nav6d/force_controller/debug/path_projection"};
+    std::string debug_target_pose_topic_{"/nav6d/force_controller/debug/carrot_pose"};
+    std::string debug_error_topic_{"/nav6d/force_controller/debug/control_error"};
 
     PDGains gains_pos_{};
     PDGains gains_att_{};
@@ -628,7 +650,7 @@ class N6dController : public rclcpp::Node {
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<N6dController>());
+    rclcpp::spin(std::make_shared<N6dForceController>());
     rclcpp::shutdown();
     return 0;
 }
