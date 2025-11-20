@@ -363,22 +363,14 @@ class N6dVelocityController : public rclcpp::Node {
         // --- Clamp and publish ---------------------------------------------
         linear_cmd_b = clamp_each(linear_cmd_b, max_linear_cmd_body_);
         angular_cmd_b = clamp_each(angular_cmd_b, max_angular_cmd_body_);
-        if (debug_enabled_) {
-            RCLCPP_INFO(get_logger(),
-                        "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |linear_cmd_b|=%.2f "
-                        "|angular_cmd_b|=%.2f speed=%.2f m/s",
-                        target_sample.segment_index, total_segments, target_sample.segment_t,
-                        s_target, total_path_length_, e_pos_w.length(), linear_cmd_b.length(),
-                        angular_cmd_b.length(), speed);
-        } else {
-            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-                                 "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m "
-                                 "|linear_cmd_b|=%.2f |angular_cmd_b|=%.2f speed=%.2f m/s",
-                                 target_sample.segment_index, total_segments,
-                                 target_sample.segment_t, s_target, total_path_length_,
-                                 e_pos_w.length(), linear_cmd_b.length(), angular_cmd_b.length(),
-                                 speed);
-        }
+        constexpr std::chrono::milliseconds kInfoThrottle{1000};
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kInfoThrottle.count(),
+                             "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m "
+                             "|linear_cmd_b|=%.2f |angular_cmd_b|=%.2f speed=%.2f m/s",
+                             target_sample.segment_index, total_segments,
+                             target_sample.segment_t, s_target, total_path_length_,
+                             e_pos_w.length(), linear_cmd_b.length(), angular_cmd_b.length(),
+                             speed);
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
         // If within goal tolerances, hold position instead of issuing new commands.

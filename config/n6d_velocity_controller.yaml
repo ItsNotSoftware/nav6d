@@ -12,22 +12,23 @@ nav6d:
       debug_error_topic: /nav6d/velocity_controller/debug/control_error       # Twist w/ position/orientation error
 
       # Core control knobs (velocity controller keeps the rest of the defaults)
-      control_rate_hz: 50.0                 # Timer frequency for the PD loop
-      lookahead_distance: 0.5                # "Carrot" distance along the path (m)
-      path_reacquire_period: 0.20            # How often we re-project onto the path (s)
-      approach_slowdown_distance: 0.5        # Shrink lookahead when close to the goal (m)
+      control_rate_hz: 100.0                 # Timer frequency for the PD loop
+      lookahead_distance: 0.20                # "Carrot" distance along the path (m)
+      path_reacquire_period: 0.10            # How often we re-project onto the path (s)
+      feedforward_speed: 0.2                # Optional constant speed along the tangent (m/s)
+      approach_slowdown_distance: 0.0        # Shrink lookahead when close to the goal (m)
       pos_tolerance: 0.05                    # Goal position tolerance (m)
-      yaw_tolerance_rad: 0.02                # Goal yaw tolerance (rad)
+      yaw_tolerance_rad: 0.08                # Goal yaw tolerance (rad)
       debug_enabled: false                   # Disable verbose logs/debug publishers
 
       # Linear (xyz) PD gains
-      kp_linear: [1.5, 1.5, 1.5]
-      kd_linear: [0.8, 0.8, 0.8]
+      kp_linear: [3.8, 3.8, 3.8]
+      kd_linear: [1.0, 1.0, 1.0]
 
       # Angular (rpy) PD gains
-      kp_angular: [2.0, 2.0, 2.0]
+      kp_angular: [1.0, 1.0, 1.0]
       kd_angular: [0.3, 0.3, 0.3]
 
       # Body-frame twist saturation
-      max_linear_velocity_xyz: [0.6, 0.6, 0.6]
+      max_linear_velocity_xyz: [0.35, 0.35, 0.35]
       max_angular_velocity_rpy: [0.6, 0.6, 0.6]

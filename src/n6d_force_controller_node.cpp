@@ -331,19 +331,13 @@ class N6dForceController : public rclcpp::Node {
         F_b = clamp_each(F_b, max_force_body_);
         M_b = clamp_each(M_b, max_torque_body_);
 
-        if (debug_enabled_) {
-            RCLCPP_INFO(get_logger(),
-                        "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |F_b|=%.2f |M_b|=%.2f speed=%.2f m/s",
-                        target_sample.segment_index, total_segments, target_sample.segment_t,
-                        s_target, total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(),
-                        speed);
-        } else {
-            RCLCPP_INFO_THROTTLE(
-                get_logger(), *get_clock(), 1000,
-                "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |F_b|=%.2f |M_b|=%.2f speed=%.2f m/s",
-                target_sample.segment_index, total_segments, target_sample.segment_t, s_target,
-                total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(), speed);
-        }
+        constexpr std::chrono::milliseconds kInfoThrottle{1000};
+        const auto throttle_ms = kInfoThrottle.count();
+        RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), throttle_ms,
+            "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |F_b|=%.2f |M_b|=%.2f speed=%.2f m/s",
+            target_sample.segment_index, total_segments, target_sample.segment_t, s_target,
+            total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(), speed);
 
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
