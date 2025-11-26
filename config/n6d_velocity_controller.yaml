@@ -22,7 +22,7 @@ nav6d:
       debug_enabled: false                   # Disable verbose logs/debug publishers
 
       # Linear (xyz) PD gains
-      kp_linear: [3.8, 3.8, 3.8]
+      kp_linear: [5.8, 5.8, 5.8]
       kd_linear: [1.0, 1.0, 1.0]
 
       # Angular (rpy) PD gains
