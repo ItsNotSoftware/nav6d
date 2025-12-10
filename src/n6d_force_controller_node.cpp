@@ -426,7 +426,7 @@ class N6dForceController : public rclcpp::Node {
         cumulative_lengths_.clear();
         total_path_length_ = 0.0;
 
-        if (!path_ || path_->poses.size() < 2) {
+        if (!path_ || path_->poses.empty()) {
             return;
         }
 
@@ -434,15 +434,15 @@ class N6dForceController : public rclcpp::Node {
         path_points_.reserve(poses.size());
         cumulative_lengths_.reserve(poses.size());
 
+        // Always insert the first pose so single-point paths remain valid.
+        const auto& first_pos = poses.front().pose.position;
+        path_points_.emplace_back(first_pos.x, first_pos.y, first_pos.z);
+        cumulative_lengths_.push_back(0.0);
+
         /* Walk the path to extract points and cumulative arc lengths for fast projection later. */
-        for (std::size_t i = 0; i < poses.size(); ++i) {
+        for (std::size_t i = 1; i < poses.size(); ++i) {
             const auto& pos = poses[i].pose.position;
             path_points_.emplace_back(pos.x, pos.y, pos.z);
-
-            if (i == 0) {
-                cumulative_lengths_.push_back(0.0);
-                continue;
-            }
 
             const tf2::Vector3 segment = path_points_[i] - path_points_[i - 1];
             total_path_length_ += segment.length();
@@ -452,7 +452,10 @@ class N6dForceController : public rclcpp::Node {
 
     // Project a point onto the cached path and return arc length info.
     std::tuple<double, std::size_t, double> project_onto_path(const tf2::Vector3& p) const {
-        if (path_points_.size() < 2) {
+        if (path_points_.empty()) {
+            return {0.0, 0, 0.0};
+        }
+        if (path_points_.size() == 1) {
             return {0.0, 0, 0.0};
         }
 
@@ -495,7 +498,21 @@ class N6dForceController : public rclcpp::Node {
     // Sample a pose at arc length s along the path.
     PathSample sample_path_pose(double s) const {
         PathSample sample;
-        if (!path_ || path_points_.size() < 2) {
+        if (!path_ || path_points_.empty()) {
+            return sample;
+        }
+        if (path_points_.size() == 1) {
+            sample.pose = path_->poses.front().pose;
+            tf2::Quaternion q(sample.pose.orientation.x, sample.pose.orientation.y,
+                              sample.pose.orientation.z, sample.pose.orientation.w);
+            if (q.length2() < 1e-12) {
+                q.setValue(0, 0, 0, 1);
+            }
+            q.normalize();
+            sample.pose.orientation.x = q.x();
+            sample.pose.orientation.y = q.y();
+            sample.pose.orientation.z = q.z();
+            sample.pose.orientation.w = q.w();
             return sample;
         }
         s = std::clamp(s, 0.0, total_path_length_);
