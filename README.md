@@ -159,7 +159,7 @@ Additional controller-specific parameters from `config/n6d_force_controller.yaml
 | `approach_slowdown_distance`| Distance where lookahead/feedforward are reduced   | `1.5`                                      |
 | `velocity_ema_alpha`        | EMA blend for velocity estimation                  | `0.6`                                      |
 | `pos_tolerance`             | Goal position tolerance (m)                        | `0.12`                                     |
-| `yaw_tolerance_rad`         | Goal yaw tolerance (rad)                           | `0.015`                                    |
+| `orientation_tolerance_rad` | Goal orientation tolerance (rad)                  | `0.015`                                    |
 | `max_velocity_mps`          | Max allowed linear speed (m/s) before braking      | `0.4`                                      |
 | `velocity_brake_gain`       | Gain for velocity-based braking                    | `3.5`                                      |
 | `use_goal_orientation`      | If true, track final goal orientation explicitly   | `false`                                    |
@@ -235,4 +235,3 @@ are:
    * A `Path` display on `/nav6d/planner/path`
    * A `MarkerArray` display on `/nav6d/planner/path_markers`
    * Fixed frame: `map`
-

@@ -73,7 +73,7 @@ class N6dForceController : public rclcpp::Node {
         approach_slowdown_distance_ = declare_parameter("approach_slowdown_distance", 1.0);
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
-        yaw_tolerance_rad_ = declare_parameter("yaw_tolerance_rad", 0.08);
+        orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
         max_velocity_mps_ = declare_parameter("max_velocity_mps", 0.0);
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
@@ -580,8 +580,12 @@ class N6dForceController : public rclcpp::Node {
         q_goal.normalize();
         tf2::Quaternion q_err = q_wb.inverse() * q_goal;
         q_err.normalize();
-        const double yaw_err = 2.0 * std::atan2(std::sqrt(q_err.z() * q_err.z()), q_err.w());
-        return std::abs(yaw_err) < yaw_tolerance_rad_;
+        if (q_err.w() < 0.0) {
+            q_err = tf2::Quaternion(-q_err.x(), -q_err.y(), -q_err.z(), -q_err.w());
+        }
+        const tf2::Vector3 axis(q_err.x(), q_err.y(), q_err.z());
+        const double angle_err = 2.0 * std::atan2(axis.length(), q_err.w());
+        return std::abs(angle_err) < orientation_tolerance_rad_;
     }
 
     // Cached configuration, ROS interfaces, and state.
@@ -599,7 +603,7 @@ class N6dForceController : public rclcpp::Node {
     double approach_slowdown_distance_{1.0};
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
-    double yaw_tolerance_rad_{0.08};
+    double orientation_tolerance_rad_{0.08};
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool use_goal_orientation_{false};

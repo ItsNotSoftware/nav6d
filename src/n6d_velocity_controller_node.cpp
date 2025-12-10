@@ -83,7 +83,7 @@ class N6dVelocityController : public rclcpp::Node {
         approach_slowdown_distance_ = declare_parameter("approach_slowdown_distance", 1.0);
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
-        yaw_tolerance_rad_ = declare_parameter("yaw_tolerance_rad", 0.08);
+        orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
         debug_enabled_ = declare_parameter("debug_enabled", false);
         debug_speed_topic_ = declare_parameter<std::string>(
             "debug_speed_topic", "/nav6d/velocity_controller/debug/linear_speed");
@@ -611,7 +611,7 @@ class N6dVelocityController : public rclcpp::Node {
             return false;
         }
 
-        // Check orientation tolerance (yaw only for simplicity).
+        // Check full orientation tolerance (roll/pitch/yaw).
         tf2::Quaternion q_goal(goal.orientation.x, goal.orientation.y, goal.orientation.z,
                                goal.orientation.w);
         if (q_goal.length2() < 1e-12) {
@@ -620,8 +620,12 @@ class N6dVelocityController : public rclcpp::Node {
         q_goal.normalize();
         tf2::Quaternion q_err = q_wb.inverse() * q_goal;
         q_err.normalize();
-        const double yaw_err = 2.0 * std::atan2(std::sqrt(q_err.z() * q_err.z()), q_err.w());
-        return std::abs(yaw_err) < yaw_tolerance_rad_;
+        if (q_err.w() < 0.0) {
+            q_err = tf2::Quaternion(-q_err.x(), -q_err.y(), -q_err.z(), -q_err.w());
+        }
+        const tf2::Vector3 axis(q_err.x(), q_err.y(), q_err.z());
+        const double angle_err = 2.0 * std::atan2(axis.length(), q_err.w());
+        return std::abs(angle_err) < orientation_tolerance_rad_;
     }
 
     // Helper to turn pose timestamps into rclcpp::Time, falling back to now() if unset.
@@ -649,7 +653,7 @@ class N6dVelocityController : public rclcpp::Node {
     double approach_slowdown_distance_{1.0};
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
-    double yaw_tolerance_rad_{0.08};
+    double orientation_tolerance_rad_{0.08};
     bool use_goal_orientation_{false};
     bool debug_enabled_{false};
     std::string debug_speed_topic_{"/nav6d/velocity_controller/debug/linear_speed"};
