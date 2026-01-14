@@ -2,6 +2,7 @@
 
 `nav6d` is a ROS 2 package targeting full **6-DoF local navigation**, from collision-aware path planning in 3D to PD-based trajectory tracking.
 
+https://github.com/user-attachments/assets/df014012-253c-4259-b148-f75168a3f44b
 
 ## Index
 
