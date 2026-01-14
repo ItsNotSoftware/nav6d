@@ -6,6 +6,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -19,11 +20,16 @@ def generate_launch_description() -> LaunchDescription:
     pkg_share = get_package_share_directory("nav6d")
     velocity_default = os.path.join(pkg_share, "config", "n6d_velocity_controller.yaml")
     force_default = os.path.join(pkg_share, "config", "n6d_force_controller.yaml")
+    evaluator_default = os.path.join(
+        pkg_share, "config", "n6d_path_evaluator.yaml"
+    )
 
     planner_config = LaunchConfiguration("planner_config_file")
     controller_type = LaunchConfiguration("controller_type")
     velocity_config = LaunchConfiguration("velocity_config_file")
     force_config = LaunchConfiguration("force_config_file")
+    evaluator_config = LaunchConfiguration("evaluator_config_file")
+    enable_evaluator = LaunchConfiguration("enable_path_evaluator")
 
     def controller_setup(context, *args, **kwargs):
         requested = controller_type.perform(context).strip().lower()
@@ -62,6 +68,12 @@ def generate_launch_description() -> LaunchDescription:
                 "velocity_config_file", default_value=velocity_default
             ),
             DeclareLaunchArgument("force_config_file", default_value=force_default),
+            DeclareLaunchArgument(
+                "enable_path_evaluator", default_value="false"
+            ),
+            DeclareLaunchArgument(
+                "evaluator_config_file", default_value=evaluator_default
+            ),
             Node(
                 package="nav6d",
                 executable="n6d_planner",
@@ -69,6 +81,15 @@ def generate_launch_description() -> LaunchDescription:
                 namespace="nav6d",
                 output="screen",
                 parameters=[planner_config],
+            ),
+            Node(
+                package="nav6d",
+                executable="n6d_path_evaluator",
+                name="n6d_path_evaluator",
+                namespace="nav6d",
+                output="screen",
+                parameters=[evaluator_config],
+                condition=IfCondition(enable_evaluator),
             ),
             OpaqueFunction(function=controller_setup),
         ]

@@ -22,15 +22,18 @@
 
 At a high level, `nav6d` assumes:
 
-- A 3D occupancy map from OctoMap on `/octomap_full`
-- A pose estimate for the robot body frame on `/space_cobot/pose`
+- A 3D occupancy map from OctoMap 
+- A pose estimate for the robot body frame
 - Goals expressed as `PoseStamped` in the map frame on `/nav6d/goal`
 
-The package is split into a planner plus two controller variants:
+## Node Overview
+
+The package is split into a planner, two controller variants, and a path evaluator:
 
 - `n6d_planner`: consumes the OctoMap and robot pose, then computes a collision-free 3D path (`nav_msgs/Path`) with consistent orientations along the way.
-- `n6d_velocity_controller`: consumes the planned path, current pose, and IMU; it projects the robot onto the path, selects a lookahead “carrot” pose, runs a 6‑DoF PD law, and publishes body-frame velocity commands (`geometry_msgs/Twist`) to `/space_cobot/cmd_vel`.
-- `n6d_force_controller`: shares the same control core but publishes wrench commands (`geometry_msgs/Wrench`) to `/space_cobot/cmd_force` for actuators that expect force/torque inputs.
+- `n6d_velocity_controller`: consumes the planned path, current pose, and IMU; it projects the robot onto the path, selects a lookahead “carrot” pose, runs a 6‑DoF PD law, and publishes body-frame velocity commands (`geometry_msgs/Twist`).
+- `n6d_force_controller`: shares the same control core but publishes wrench commands (`geometry_msgs/Wrench`) for actuators that expect force/torque inputs.
+- `n6d_path_evaluator`: scores any `nav_msgs/Path` against the OctoMap and publishes `nav6d/msg/PathQuality` on `/nav6d/path_quality`.
 
 Planner and the selected controller are typically launched together via `n6d.launch.py`, but you can also run only the planner or only a controller.
 
@@ -40,6 +43,7 @@ Planner and the selected controller are typically launched together via `n6d.lau
 * A* path planning over OctoMap voxel grids (position only)
 * SLERP-based orientation planning along the path
 * 6-DoF PD controller for trajectory tracking (position + attitude)
+* Planner-agnostic path quality scoring against OctoMap geometry
 
 
 ## Getting Started
@@ -61,6 +65,8 @@ sudo apt install ros-${ROS_DISTRO}-octomap-msgs
 ```
 
 An active OctoMap is also required, but it can be published by **any** package that provides an `octomap_msgs/msg/Octomap` topic.
+
+The path evaluator publishes `nav6d/msg/PathQuality`, which is defined in the `nav6d` package.
 
 ### Recommended
 
@@ -89,6 +95,12 @@ Switch to the force-based controller with:
 ros2 launch nav6d n6d.launch.py controller_type:=force
 ```
 
+**Planner + controller + optional path evaluator:**
+
+```bash
+ros2 launch nav6d n6d.launch.py enable_path_evaluator:=true
+```
+
 **Planner only:**
 
 ```bash
@@ -103,17 +115,23 @@ ros2 launch nav6d n6d_controller.launch.py
 
 Pass `controller_type:=force` to launch only the wrench-based controller.
 
+**Path evaluator only:**
+
+```bash
+ros2 launch nav6d n6d_path_evaluator.launch.py
+```
+
 ## Runtime Requirements
 
 ### Subscribed Topics
 
-**Note:** The topic names listed below are defaults. You can override all of them in `config/n6d_planner.yaml` via `map_topic`, `pose_topic`, `goal_topic`, `path_topic`, and `marker_topic`.
+**Note:** Topic names are configurable; see the YAML files in `config/`.
 
-| Topic               | Type                            | Description                                  |
-| :------------------ | :------------------------------ | :------------------------------------------- |
-| `/octomap_full`     | `octomap_msgs/msg/Octomap`      | 3D occupancy map used for collision checking |
-| `/space_cobot/pose` | `geometry_msgs/msg/PoseStamped` | Robot pose in the map frame                  |
-| `/nav6d/goal`       | `geometry_msgs/msg/PoseStamped` | Target pose to plan toward                   |
+| Type                            | Description                                  |
+| :------------------------------ | :------------------------------------------- |
+| `octomap_msgs/msg/Octomap`      | 3D occupancy map used for collision checking |
+| `geometry_msgs/msg/PoseStamped` | Robot pose in the map frame                  |
+| `geometry_msgs/msg/PoseStamped` | Target pose to plan toward                   |
 
 ### Published Topics
 
@@ -121,6 +139,9 @@ Pass `controller_type:=force` to launch only the wrench-based controller.
 | :---------------------------- | :----------------------------------- | :----------------------------------- |
 | `/nav6d/planner/path`         | `nav_msgs/msg/Path`                  | Generated waypoint path              |
 | `/nav6d/planner/path_markers` | `visualization_msgs/msg/MarkerArray` | Debug visualization markers for RViz |
+| `/nav6d/path_quality`         | `nav6d/msg/PathQuality`              | Path quality scores from evaluator   |
+| `/space_cobot/cmd_vel`        | `geometry_msgs/msg/Twist`            | Velocity controller output           |
+| `/space_cobot/cmd_force`      | `geometry_msgs/msg/Wrench`           | Force controller output              |
 
 Each newly received goal triggers a replanning pass.
 Markers are only published if `debug_markers` is enabled.
@@ -130,50 +151,60 @@ Markers are only published if `debug_markers` is enabled.
 
 Parameters are managed via the YAML configuration file.
 
-| Parameter             | Description                               | Default                       |
-| :-------------------- | :---------------------------------------- | :---------------------------- |
-| `map_topic`           | OctoMap input topic                       | `/octomap_full`               |
-| `pose_topic`          | Robot pose topic                          | `/space_cobot/pose`           |
-| `goal_topic`          | Goal pose topic                           | `/nav6d/goal`                 |
-| `path_topic`          | Planned path output topic                 | `/nav6d/planner/path`         |
-| `map_frame`           | Frame ID for path poses                   | `map`                         |
-| `robot_radius`        | Collision model radius (m)                | `0.35`                        |
-| `occupancy_threshold` | Probability threshold for occupied voxels | `0.5`                         |
-| `max_search_range`    | Maximum search distance (m)               | `15.0`                        |
-| `max_expansions`      | A* node expansion limit                   | `60000`                       |
-| `line_sample_step`    | Step size for line feasibility checks (m) | `0.25`                        |
-| `slerp_orientation`   | SLERP interpolate start→goal orientation  | `true`                       |
-| `debug_markers`       | Enable RViz path visualization                 | `true`                        |
-| `marker_topic`        | MarkerArray topic name                    | `/nav6d/planner/path_markers` |
+| Parameter             | Description                               |
+| :-------------------- | :---------------------------------------- |
+| `map_topic`           | OctoMap input topic                       |
+| `pose_topic`          | Robot pose topic                          |
+| `goal_topic`          | Goal pose topic                           |
+| `path_topic`          | Planned path output topic                 |
+| `map_frame`           | Frame ID for path poses                   |
+| `robot_radius`        | Collision model radius (m)                |
+| `occupancy_threshold` | Probability threshold for occupied voxels |
+| `max_search_range`    | Maximum search distance (m)               |
+| `max_expansions`      | A* node expansion limit                   |
+| `line_sample_step`    | Step size for line feasibility checks (m) |
+| `slerp_orientation`   | SLERP interpolate start→goal orientation  |
+| `debug_markers`       | Enable RViz path visualization            |
+| `marker_topic`        | MarkerArray topic name                    |
 
 Additional controller-specific parameters from `config/n6d_force_controller.yaml`
 (the velocity controller uses the same keys but publishes twists instead of wrenches):
 
-| Parameter                    | Description                                        | Example Default                            |
-| :--------------------------- | :------------------------------------------------- | :----------------------------------------- |
-| `cmd_force_topic` / `cmd_velocity_topic`| Output topic for wrench or twist commands       | `/space_cobot/cmd_force` (force) / `/space_cobot/cmd_vel` (velocity) |
-| `control_rate_hz`           | PD loop frequency (Hz)                             | `100.0`                                    |
-| `lookahead_distance`        | "Carrot" distance along path (m)                   | `0.7`                                      |
-| `path_reacquire_period`     | Projection refresh period (s)                      | `0.10`                                     |
-| `feedforward_speed`         | Tangential feedforward speed (m/s)                 | `0.0`                                      |
-| `approach_slowdown_distance`| Distance where lookahead/feedforward are reduced   | `1.5`                                      |
-| `velocity_ema_alpha`        | EMA blend for velocity estimation                  | `0.6`                                      |
-| `pos_tolerance`             | Goal position tolerance (m)                        | `0.12`                                     |
-| `orientation_tolerance_rad` | Goal orientation tolerance (rad)                  | `0.015`                                    |
-| `max_velocity_mps`          | Max allowed linear speed (m/s) before braking      | `0.4`                                      |
-| `velocity_brake_gain`       | Gain for velocity-based braking                    | `3.5`                                      |
-| `use_goal_orientation`      | If true, track final goal orientation explicitly   | `false`                                    |
-| `kp_linear`                 | XYZ position PD gains (`[Kpx, Kpy, Kpz]`)          | `[14.8, 14.8, 14.0]`                        |
-| `kd_linear`                 | XYZ velocity PD gains (`[Kdx, Kdy, Kdz]`)          | `[12.0, 12.0, 12.0]`                        |
-| `kp_angular`                | Roll/pitch/yaw attitude gains                      | `[2.0, 2.0, 2.0]`                           |
-| `kd_angular`                | Roll/pitch/yaw angular velocity gains              | `[1.0, 1.0, 1.0]`                           |
-| `max_force_xyz` / `max_linear_velocity_xyz`             | Per-axis body-frame command clamp (linear)  | `[300.0,300.0,300.0]` (force) / `[0.6,0.6,0.4]` (velocity) |
-| `max_torque_rpy` / `max_angular_velocity_rpy`            | Per-axis body-frame command clamp (angular) | `[8.0,8.0,8.0]` (force) / `[0.6,0.6,0.6]` (velocity)       |
-| `debug_enabled`             | Enable verbose logs and debug topics               | `true`                                     |
-| `debug_speed_topic`         | Topic for scalar linear speed debug                | `/nav6d/force_controller/debug/linear_speed` (`/nav6d/velocity_controller/...` for velocity)     |
-| `debug_projected_pose_topic`| Topic for projected-on-path pose                   | `/nav6d/force_controller/debug/path_projection` (force) / `/nav6d/velocity_controller/...` (velocity) |
-| `debug_target_pose_topic`   | Topic for lookahead "carrot" pose                  | `/nav6d/force_controller/debug/carrot_pose` (force) / `/nav6d/velocity_controller/...` (velocity)     |
-| `debug_error_topic`         | Topic for pose/orientation error debug             | `/nav6d/force_controller/debug/control_error` (force) / `/nav6d/velocity_controller/...` (velocity)   |
+| Parameter                    | Description                                        |
+| :--------------------------- | :------------------------------------------------- |
+| `cmd_force_topic` / `cmd_velocity_topic`| Output topic for wrench or twist commands       |
+| `control_rate_hz`           | PD loop frequency (Hz)                             |
+| `lookahead_distance`        | "Carrot" distance along path (m)                   |
+| `path_reacquire_period`     | Projection refresh period (s)                      |
+| `feedforward_speed`         | Tangential feedforward speed (m/s)                 |
+| `approach_slowdown_distance`| Distance where lookahead/feedforward are reduced   |
+| `velocity_ema_alpha`        | EMA blend for velocity estimation                  |
+| `pos_tolerance`             | Goal position tolerance (m)                        |
+| `orientation_tolerance_rad` | Goal orientation tolerance (rad)                   |
+| `max_velocity_mps`          | Max allowed linear speed (m/s) before braking      |
+| `velocity_brake_gain`       | Gain for velocity-based braking                    |
+| `use_goal_orientation`      | If true, track final goal orientation explicitly   |
+| `kp_linear`                 | XYZ position PD gains (`[Kpx, Kpy, Kpz]`)          |
+| `kd_linear`                 | XYZ velocity PD gains (`[Kdx, Kdy, Kdz]`)          |
+| `kp_angular`                | Roll/pitch/yaw attitude gains                      |
+| `kd_angular`                | Roll/pitch/yaw angular velocity gains              |
+| `max_force_xyz` / `max_linear_velocity_xyz`             | Per-axis body-frame command clamp (linear)  |
+| `max_torque_rpy` / `max_angular_velocity_rpy`            | Per-axis body-frame command clamp (angular) |
+| `debug_enabled`             | Enable verbose logs and debug topics               |
+| `debug_speed_topic`         | Topic for scalar linear speed debug                |
+| `debug_projected_pose_topic`| Topic for projected-on-path pose                   |
+| `debug_target_pose_topic`   | Topic for lookahead "carrot" pose                  |
+| `debug_error_topic`         | Topic for pose/orientation error debug             |
+
+Path quality parameters from `config/n6d_path_evaluator.yaml`:
+
+| Parameter             | Description                                 |
+| :-------------------- | :------------------------------------------ |
+| `robot_radius`        | Collision radius for clearance checks (m)   |
+| `alpha`               | Clearance scale factor (T = alpha * radius) |
+| `occupancy_threshold` | Probability threshold for occupied voxels   |
+| `sample_step`         | Min spacing between sampled poses (m)       |
+| `w_c` / `w_n` / `w_t` / `w_e` | Weights for clearance, narrow, turn, efficiency |
 
 Tune these parameters to match your robot geometry, map resolution, and search performance requirements.
 `yaw_tolerance_rad` is still accepted for legacy configs, but `orientation_tolerance_rad` is preferred.
@@ -181,27 +212,8 @@ The bundled `n6d_planner.yaml` uses the `/**:` wildcard so the same values apply
 
 > **Performance tip:** OctoMap resolution has a noticeable impact on planning speed—finer grids explode the number of voxels the A* search and collision checks must touch. In our tests a 0.2 m resolution offered a good trade-off between fidelity and runtime; use coarser maps if you need faster replans.
 
-### Controller Configuration
 
-Two YAML files ship with nav6d to keep the controller variants separate:
 
-- `config/n6d_velocity_controller.yaml` contains twist-specific parameters (clamps, feedforward,
-  debug topics). This file is selected by default in `n6d.launch.py` and in
-  `n6d_controller.launch.py` when `controller_type:=velocity`.
-- `config/n6d_force_controller.yaml` mirrors the same structure but publishes wrenches. Launch with
-  `controller_type:=force` to load this file automatically.
-
-Both YAMLs expose identical knobs (topics, PD gains, tolerances, debug flags) so you can tune one
-controller and mirror the settings to the other when needed. The most important fields to update
-are:
-
-1. `cmd_velocity_topic` / `cmd_force_topic`: body-frame output topics consumed by your bridge or
-   actuators.
-2. `lookahead_distance`, `approach_slowdown_distance`, and `feedforward_speed`: shape how the
-   carrot pose is selected along the path.
-3. `kp_linear`, `kd_linear`, `kp_angular`, `kd_angular`: PD gains for translation and rotation.
-4. `max_linear_velocity_xyz` / `max_force_xyz` and `max_angular_velocity_rpy` / `max_torque_rpy`:
-   per-axis clamps that keep the controller outputs within what the vehicle can track.
 
 ## Example Usage
 

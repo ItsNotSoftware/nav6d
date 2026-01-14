@@ -1,0 +1,5 @@
+float32 clearance_score
+float32 narrow_score
+float32 turn_score
+float32 efficiency_score
+float32 heuristic

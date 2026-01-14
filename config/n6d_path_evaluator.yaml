@@ -1,0 +1,19 @@
+nav6d:
+  n6d_path_evaluator:
+    ros__parameters:
+      # Topics for the path evaluator.
+      map_topic: /octomap_full             # OctoMap input (octomap_msgs/Octomap)
+      path_topic: /nav6d/planner/path      # Path to score (nav_msgs/Path)
+      quality_topic: /nav6d/path_quality   # Output score topic (nav6d/PathQuality)
+
+      # Geometry + clearance settings.
+      robot_radius: 0.35                   # Collision radius (m)
+      alpha: 1.5                           # Clearance scale factor (T = alpha * radius)
+      occupancy_threshold: 0.5             # Voxel occupancy probability treated as occupied
+      sample_step: 0.25                    # Minimum spacing (m) between sampled path poses
+
+      # Score weights 
+      w_c: 0.25
+      w_n: 0.25
+      w_t: 0.25
+      w_e: 0.25
