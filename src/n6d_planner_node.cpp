@@ -273,6 +273,8 @@ class N6dPlanner : public rclcpp::Node {
 
         const octomap::point3d start_c = key_to_coord(*octree_, start_key);
         const octomap::point3d goal_c = key_to_coord(*octree_, goal_key);
+        const octomap::point3d start_exact(start_p.x, start_p.y, start_p.z);
+        const octomap::point3d goal_exact(goal_p.x, goal_p.y, goal_p.z);
 
         // Drop quests that begin or end inside occupied voxels.
         if (!is_collision_free(start_c)) {
@@ -294,9 +296,9 @@ class N6dPlanner : public rclcpp::Node {
             path_out.header.frame_id = map_frame_;
             geometry_msgs::msg::PoseStamped pose;
             pose.header = path_out.header;
-            pose.pose.position.x = start_c.x();
-            pose.pose.position.y = start_c.y();
-            pose.pose.position.z = start_c.z();
+            pose.pose.position.x = start_exact.x();
+            pose.pose.position.y = start_exact.y();
+            pose.pose.position.z = start_exact.z();
             pose.pose.orientation =
                 slerp_orientation_ ? slerp_between(start_q, goal_q, 1.0) : goal_q;
             path_out.poses.push_back(pose);
@@ -305,7 +307,8 @@ class N6dPlanner : public rclcpp::Node {
 
         // Try straight line first
         if (is_line_free(start_c, goal_c)) {
-            path_out = create_straight_path(start_c, goal_c, start_q, goal_q);
+            path_out =
+                create_straight_path(start_c, goal_c, start_exact, goal_exact, start_q, goal_q);
             return true;
         }
 
@@ -314,7 +317,7 @@ class N6dPlanner : public rclcpp::Node {
         if (!perform_a_star(start_key, goal_key, start_c, goal_c, key_path)) {
             return false;
         }
-        path_out = keys_to_path(key_path, start_q, goal_q);
+        path_out = keys_to_path(key_path, start_exact, goal_exact, start_q, goal_q);
         return true;
     }
 
@@ -434,6 +437,8 @@ class N6dPlanner : public rclcpp::Node {
 
     // Transform OcTree keys into a ROS Path message anchored in the map frame.
     nav_msgs::msg::Path keys_to_path(const std::vector<octomap::OcTreeKey>& keys,
+                                     const octomap::point3d& start_exact,
+                                     const octomap::point3d& goal_exact,
                                      const geometry_msgs::msg::Quaternion& start_q,
                                      const geometry_msgs::msg::Quaternion& goal_q) const {
         nav_msgs::msg::Path path;
@@ -447,6 +452,8 @@ class N6dPlanner : public rclcpp::Node {
             for (const auto& k : keys) coords.push_back(key_to_coord(*octree_, k));
 
             path.poses.reserve(coords.size());
+            coords.front() = start_exact;
+            coords.back() = goal_exact;
             /* Populate PoseStamped entries (with SLERP orientation if enabled). */
             for (std::size_t i = 0; i < coords.size(); ++i) {
                 geometry_msgs::msg::PoseStamped p;
@@ -464,6 +471,8 @@ class N6dPlanner : public rclcpp::Node {
     // Produce a discretised straight-line path along the requested segment.
     nav_msgs::msg::Path create_straight_path(const octomap::point3d& a,
                                              const octomap::point3d& b,
+                                             const octomap::point3d& start_exact,
+                                             const octomap::point3d& goal_exact,
                                              const geometry_msgs::msg::Quaternion& start_q,
                                              const geometry_msgs::msg::Quaternion& goal_q) const {
         nav_msgs::msg::Path path;
@@ -485,6 +494,8 @@ class N6dPlanner : public rclcpp::Node {
 
         // Interpolate waypoints along the segment.
         path.poses.reserve(coords.size());
+        coords.front() = start_exact;
+        coords.back() = goal_exact;
         /* Convert samples into PoseStamped messages with appropriate orientation. */
         for (std::size_t i = 0; i < coords.size(); ++i) {
             geometry_msgs::msg::PoseStamped p;

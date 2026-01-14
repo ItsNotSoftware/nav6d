@@ -64,6 +64,7 @@ class N6dForceController : public rclcpp::Node {
         imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
         cmd_force_topic_ = declare_parameter<std::string>("cmd_force_topic", "/space_cobot/cmd_force");
         use_goal_orientation_ = declare_parameter<bool>("use_goal_orientation", false);
+        allow_in_place_rotation_ = declare_parameter<bool>("allow_in_place_rotation", true);
 
         // Control knobs
         control_rate_hz_ = declare_parameter("control_rate_hz", 50.0);
@@ -73,7 +74,14 @@ class N6dForceController : public rclcpp::Node {
         approach_slowdown_distance_ = declare_parameter("approach_slowdown_distance", 1.0);
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
-        yaw_tolerance_rad_ = declare_parameter("yaw_tolerance_rad", 0.08);
+        orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
+        const double legacy_yaw_tolerance =
+            declare_parameter("yaw_tolerance_rad", orientation_tolerance_rad_);
+        if (std::abs(legacy_yaw_tolerance - orientation_tolerance_rad_) > 1e-9) {
+            RCLCPP_WARN(get_logger(),
+                        "yaw_tolerance_rad is deprecated; use orientation_tolerance_rad.");
+            orientation_tolerance_rad_ = legacy_yaw_tolerance;
+        }
         max_velocity_mps_ = declare_parameter("max_velocity_mps", 0.0);
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
@@ -261,6 +269,9 @@ class N6dForceController : public rclcpp::Node {
         if (path_points_.size() >= 2) {
             projected_pose = sample_path_pose(s_robot).pose;
         }
+        if (path_ && path_->poses.size() == 1) {
+            target_pose = path_->poses.front().pose;
+        }
         // Optionally force the carrot orientation to match the final goal pose.
         if (use_goal_orientation_ && path_ && !path_->poses.empty()) {
             target_pose.orientation = path_->poses.back().pose.orientation;
@@ -285,6 +296,10 @@ class N6dForceController : public rclcpp::Node {
         }
         q_wb.normalize();
         tf2::Matrix3x3 R_wb(q_wb);
+        const GoalStatus goal_status = check_goal_status(p_w, q_wb);
+        if (allow_in_place_rotation_ && goal_status.pos_ok && path_ && !path_->poses.empty()) {
+            target_pose.orientation = path_->poses.back().pose.orientation;
+        }
 
         // Linear PD in world frame; rotate results to body frame.
         tf2::Vector3 e_pos_w = p_des - p_w;
@@ -341,10 +356,14 @@ class N6dForceController : public rclcpp::Node {
 
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
-        if (is_goal_reached(p_w, q_wb)) {
+        if (goal_status.pos_ok && goal_status.orient_ok) {
             RCLCPP_INFO(get_logger(), "Goal reached. Holding position at s=%.2f/%.2f.", s_robot,
                         total_path_length_);
             publish_wrench_zero();
+            return;
+        }
+        if (allow_in_place_rotation_ && goal_status.pos_ok) {
+            publish_wrench(tf2::Vector3(0.0, 0.0, 0.0), M_b);
             return;
         }
 
@@ -560,28 +579,42 @@ class N6dForceController : public rclcpp::Node {
         return diff * (1.0 / norm);
     }
 
+    struct GoalStatus {
+        bool pos_ok{false};
+        bool orient_ok{false};
+    };
+
     // Check if current pose is within configured tolerances of the goal.
-    bool is_goal_reached(const tf2::Vector3& p_w, const tf2::Quaternion& q_wb) const {
+    GoalStatus check_goal_status(const tf2::Vector3& p_w, const tf2::Quaternion& q_wb) const {
+        GoalStatus status;
         if (!path_ || path_->poses.empty()) {
-            return false;
+            return status;
         }
 
         const auto& goal = path_->poses.back().pose;
         const tf2::Vector3 p_goal(goal.position.x, goal.position.y, goal.position.z);
-        if ((p_w - p_goal).length() > pos_tolerance_) {
-            return false;
+        status.pos_ok = (p_w - p_goal).length() <= pos_tolerance_;
+        if (!status.pos_ok) {
+            return status;
         }
 
         tf2::Quaternion q_goal(goal.orientation.x, goal.orientation.y, goal.orientation.z,
                                goal.orientation.w);
         if (q_goal.length2() < 1e-12) {
-            return true;
+            status.orient_ok = true;
+            return status;
         }
         q_goal.normalize();
         tf2::Quaternion q_err = q_wb.inverse() * q_goal;
+        if (q_err.w() < 0.0) {
+            q_err = tf2::Quaternion(-q_err.x(), -q_err.y(), -q_err.z(), -q_err.w());
+        }
         q_err.normalize();
-        const double yaw_err = 2.0 * std::atan2(std::sqrt(q_err.z() * q_err.z()), q_err.w());
-        return std::abs(yaw_err) < yaw_tolerance_rad_;
+        const double sin_half = std::sqrt(q_err.x() * q_err.x() + q_err.y() * q_err.y() +
+                                          q_err.z() * q_err.z());
+        const double angle = 2.0 * std::atan2(sin_half, q_err.w());
+        status.orient_ok = std::abs(angle) < orientation_tolerance_rad_;
+        return status;
     }
 
     // Cached configuration, ROS interfaces, and state.
@@ -599,10 +632,11 @@ class N6dForceController : public rclcpp::Node {
     double approach_slowdown_distance_{1.0};
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
-    double yaw_tolerance_rad_{0.08};
+    double orientation_tolerance_rad_{0.08};
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool use_goal_orientation_{false};
+    bool allow_in_place_rotation_{true};
     bool debug_enabled_{false};
     std::string debug_speed_topic_{"/nav6d/force_controller/debug/linear_speed"};
     std::string debug_projected_pose_topic_{"/nav6d/force_controller/debug/path_projection"};

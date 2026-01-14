@@ -20,7 +20,8 @@ nav6d:
       approach_slowdown_distance: 0.0          # Scale lookahead/feedforward when this close to goal (m)
       velocity_ema_alpha: 0.6                  # EMA blend factor for velocity estimation
       pos_tolerance: 0.15                      # Goal position tolerance (m)
-      yaw_tolerance_rad: 0.08                  # Goal yaw tolerance (rad), just using yaw for simplicity
+      orientation_tolerance_rad: 0.08          # Goal orientation tolerance (rad), all axes
+      allow_in_place_rotation: true            # Allow rotation when position tolerance is satisfied
       max_velocity_mps: 0.8                    # Maximum allowed linear speed before braking (m/s)
       velocity_brake_gain: 3.5                 # Force gain applied when braking above max velocity
       debug_enabled: false                     # Enable verbose logs and debug publishers
