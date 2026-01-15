@@ -78,6 +78,9 @@ class N6dForceController : public rclcpp::Node {
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
         orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
+        zero_cmd_threshold_ = declare_parameter("zero_cmd_threshold", 1e-3);
+        path_end_tolerance_ = declare_parameter("path_end_tolerance", 1e-3);
+        min_path_length_ = declare_parameter("min_path_length", 0.05);
         const double legacy_yaw_tolerance =
             declare_parameter("yaw_tolerance_rad", orientation_tolerance_rad_);
         if (std::abs(legacy_yaw_tolerance - orientation_tolerance_rad_) > 1e-9) {
@@ -363,6 +366,16 @@ class N6dForceController : public rclcpp::Node {
 
         F_b = clamp_each(F_b, max_force_body_);
         M_b = clamp_each(M_b, max_torque_body_);
+        const bool at_path_end = (total_path_length_ - s_target) <= path_end_tolerance_;
+        if (at_path_end && F_b.length() <= zero_cmd_threshold_ &&
+            M_b.length() <= zero_cmd_threshold_) {
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
+            publish_wrench_zero();
+            return;
+        }
 
         constexpr std::chrono::milliseconds kInfoThrottle{1000};
         const auto throttle_ms = kInfoThrottle.count();
@@ -383,6 +396,10 @@ class N6dForceController : public rclcpp::Node {
             return;
         }
         if (allow_in_place_rotation_ && goal_status.pos_ok) {
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
             publish_wrench(tf2::Vector3(0.0, 0.0, 0.0), M_b);
             return;
         }
@@ -666,6 +683,11 @@ class N6dForceController : public rclcpp::Node {
     }
 
     void log_path_summary(bool completed) {
+        if (total_path_length_ < min_path_length_) {
+            summary_logged_ = true;
+            path_active_ = false;
+            return;
+        }
         const double denom = tracking_error_count_ > 0U
                                  ? static_cast<double>(tracking_error_count_)
                                  : 1.0;
@@ -702,6 +724,9 @@ class N6dForceController : public rclcpp::Node {
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
     double orientation_tolerance_rad_{0.08};
+    double zero_cmd_threshold_{1e-3};
+    double path_end_tolerance_{1e-3};
+    double min_path_length_{0.05};
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool use_goal_orientation_{false};

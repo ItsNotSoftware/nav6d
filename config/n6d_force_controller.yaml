@@ -23,6 +23,9 @@ nav6d:
       pos_tolerance: 0.15                      # Goal position tolerance (m)
       orientation_tolerance_rad: 0.08          # Goal orientation tolerance (rad), all axes
       allow_in_place_rotation: true            # Allow rotation when position tolerance is satisfied
+      zero_cmd_threshold: 0.001                # Treat near-zero commands as completion when at path end
+      path_end_tolerance: 0.001                # Arc length tolerance for "at end of path" (m)
+      min_path_length: 0.05                    # Minimum path length before publishing summaries (m)
       max_velocity_mps: 0.8                    # Maximum allowed linear speed before braking (m/s)
       velocity_brake_gain: 3.5                 # Force gain applied when braking above max velocity
       debug_enabled: false                     # Enable verbose logs and debug publishers

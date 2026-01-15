@@ -73,6 +73,7 @@ private:
         alpha_ = declare_parameter("alpha", 1.5);
         occupancy_threshold_ = declare_parameter("occupancy_threshold", 0.5);
         sample_step_ = declare_parameter("sample_step", 0.25);
+        min_path_length_ = declare_parameter("min_path_length", 0.05);
 
         (void)declare_parameter("w_c", 0.25);
         (void)declare_parameter("w_n", 0.25);
@@ -257,6 +258,10 @@ private:
             const auto &b = poses[i + 1].pose.position;
             path_length += std::hypot(std::hypot(b.x - a.x, b.y - a.y), b.z - a.z);
         }
+        if (path_length < min_path_length_)
+        {
+            return;
+        }
         const auto &start = poses.front().pose.position;
         const auto &goal = poses.back().pose.position;
         const double straight_dist =
@@ -364,6 +369,7 @@ private:
     double alpha_{1.5};
     double occupancy_threshold_{0.5};
     double sample_step_{0.25};
+    double min_path_length_{0.05};
 
     // --- ROS interfaces -----------------------------------------------------
     rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr map_sub_;

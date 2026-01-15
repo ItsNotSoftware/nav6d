@@ -88,6 +88,9 @@ class N6dVelocityController : public rclcpp::Node {
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
         orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
+        zero_cmd_threshold_ = declare_parameter("zero_cmd_threshold", 1e-3);
+        path_end_tolerance_ = declare_parameter("path_end_tolerance", 1e-3);
+        min_path_length_ = declare_parameter("min_path_length", 0.05);
         const double legacy_yaw_tolerance =
             declare_parameter("yaw_tolerance_rad", orientation_tolerance_rad_);
         if (std::abs(legacy_yaw_tolerance - orientation_tolerance_rad_) > 1e-9) {
@@ -394,6 +397,16 @@ class N6dVelocityController : public rclcpp::Node {
         // --- Clamp and publish ---------------------------------------------
         linear_cmd_b = clamp_each(linear_cmd_b, max_linear_cmd_body_);
         angular_cmd_b = clamp_each(angular_cmd_b, max_angular_cmd_body_);
+        const bool at_path_end = (total_path_length_ - s_target) <= path_end_tolerance_;
+        if (at_path_end && linear_cmd_b.length() <= zero_cmd_threshold_ &&
+            angular_cmd_b.length() <= zero_cmd_threshold_) {
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
+            publish_twist_zero();
+            return;
+        }
         constexpr std::chrono::milliseconds kInfoThrottle{1000};
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kInfoThrottle.count(),
                              "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m "
@@ -414,6 +427,10 @@ class N6dVelocityController : public rclcpp::Node {
             return;
         }
         if (allow_in_place_rotation_ && goal_status.pos_ok) {
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
             publish_twist(tf2::Vector3(0.0, 0.0, 0.0), angular_cmd_b);
             return;
         }
@@ -708,6 +725,11 @@ class N6dVelocityController : public rclcpp::Node {
     }
 
     void log_path_summary(bool completed) {
+        if (total_path_length_ < min_path_length_) {
+            summary_logged_ = true;
+            path_active_ = false;
+            return;
+        }
         const double denom = tracking_error_count_ > 0U
                                  ? static_cast<double>(tracking_error_count_)
                                  : 1.0;
@@ -744,6 +766,9 @@ class N6dVelocityController : public rclcpp::Node {
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
     double orientation_tolerance_rad_{0.08};
+    double zero_cmd_threshold_{1e-3};
+    double path_end_tolerance_{1e-3};
+    double min_path_length_{0.05};
     bool use_goal_orientation_{false};
     bool allow_in_place_rotation_{true};
     bool debug_enabled_{false};
