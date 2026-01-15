@@ -9,7 +9,7 @@ nav6d:
       map_frame: world                         # TF frame in which path poses are expressed
 
       # Collision model and search limits.
-      robot_radius: 0.45                       # Radius (m) used to inflate obstacles during collision checks
+      robot_radius: 0.225                       # Radius (m) used to inflate obstacles during collision checks
       occupancy_threshold: 0.5                 # Voxel occupancy probability treated as occupied
       max_search_range: 25.0                   # Maximum straight-line distance (m) the planner will search
       max_expansions: 60000                    # A* node expansion cap to avoid runaway searches

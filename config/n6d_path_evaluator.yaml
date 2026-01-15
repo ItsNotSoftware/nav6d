@@ -7,8 +7,8 @@ nav6d:
       quality_topic: /nav6d/path_quality   # Output score topic (nav6d/PathQuality)
 
       # Geometry + clearance settings.
-      robot_radius: 0.35                   # Collision radius (m)
-      alpha: 1.5                           # Clearance scale factor (T = alpha * radius)
+      robot_radius: 0.225                   # Collision radius (m)
+      alpha: 1.0                           # Clearance scale factor (T = alpha * radius)
       occupancy_threshold: 0.5             # Voxel occupancy probability treated as occupied
       sample_step: 0.25                    # Minimum spacing (m) between sampled path poses
       min_path_length: 0.05                # Minimum path length before publishing (m)
