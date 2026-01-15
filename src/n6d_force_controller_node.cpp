@@ -174,14 +174,22 @@ class N6dForceController : public rclcpp::Node {
     // Cache latest path/pose/IMU messages so the control loop can run at its own rate.
     void handle_path(const nav_msgs::msg::Path::SharedPtr msg) {
         if (!msg || msg->poses.empty()) {
+            if (path_active_ && !summary_logged_) {
+                log_path_summary(false);
+            }
             RCLCPP_WARN(get_logger(), "Received empty path; holding position.");
             path_.reset();
+            path_active_ = false;
             return;
         }
 
+        if (path_active_ && !summary_logged_) {
+            log_path_summary(false);
+        }
         path_ = *msg;
         preprocess_path();
         last_reacquire_time_ = now();
+        reset_execution_stats();
 
         RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
                     total_path_length_);
@@ -239,11 +247,13 @@ class N6dForceController : public rclcpp::Node {
         auto [s_robot, seg_idx, seg_t] = project_onto_path(p_w);
         (void)seg_idx;
         (void)seg_t;
+        last_s_robot_ = s_robot;
 
         // Periodically force a fresh projection to avoid sticking to stale segments.
         if ((now_time - last_reacquire_time_).seconds() > path_reacquire_period_) {
             last_reacquire_time_ = now_time;
             std::tie(s_robot, seg_idx, seg_t) = project_onto_path(p_w);
+            last_s_robot_ = s_robot;
         }
 
         const double s_remaining = std::max(0.0, total_path_length_ - s_robot);
@@ -308,6 +318,7 @@ class N6dForceController : public rclcpp::Node {
                          gains_pos_.kp[1] * e_pos_w.y() + gains_pos_.kd[1] * e_vel_w.y(),
                          gains_pos_.kp[2] * e_pos_w.z() + gains_pos_.kd[2] * e_vel_w.z());
         const double speed = v_est_w.length();
+        update_tracking_error(p_w, projected_pose);
         if (max_velocity_mps_ > 1e-3) {
             if (speed > max_velocity_mps_) {
                 const tf2::Vector3 v_dir = v_est_w * (1.0 / std::max(speed, 1e-6));
@@ -357,8 +368,10 @@ class N6dForceController : public rclcpp::Node {
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
         if (goal_status.pos_ok && goal_status.orient_ok) {
-            RCLCPP_INFO(get_logger(), "Goal reached. Holding position at s=%.2f/%.2f.", s_robot,
-                        total_path_length_);
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
             publish_wrench_zero();
             return;
         }
@@ -617,6 +630,46 @@ class N6dForceController : public rclcpp::Node {
         return status;
     }
 
+    void reset_execution_stats() {
+        tracking_error_sum_sq_ = 0.0;
+        tracking_error_count_ = 0U;
+        last_s_robot_ = 0.0;
+        summary_logged_ = false;
+        path_active_ = true;
+    }
+
+    void update_tracking_error(const tf2::Vector3& p_w,
+                               const std::optional<geometry_msgs::msg::Pose>& projected_pose) {
+        if (!path_active_ || summary_logged_) {
+            return;
+        }
+        tf2::Vector3 proj_w;
+        if (projected_pose) {
+            proj_w.setValue(projected_pose->position.x, projected_pose->position.y,
+                            projected_pose->position.z);
+        } else if (path_ && path_->poses.size() == 1) {
+            const auto& pos = path_->poses.front().pose.position;
+            proj_w.setValue(pos.x, pos.y, pos.z);
+        } else {
+            return;
+        }
+        const double dist2 = (p_w - proj_w).length2();
+        tracking_error_sum_sq_ += dist2;
+        ++tracking_error_count_;
+    }
+
+    void log_path_summary(bool completed) {
+        const double denom = tracking_error_count_ > 0U
+                                 ? static_cast<double>(tracking_error_count_)
+                                 : 1.0;
+        const double rms = std::sqrt(tracking_error_sum_sq_ / denom);
+        const char* label = completed ? "completed" : "aborted";
+        RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
+                    last_s_robot_, total_path_length_, rms);
+        summary_logged_ = true;
+        path_active_ = false;
+    }
+
     // Cached configuration, ROS interfaces, and state.
     // Topics
     std::string path_topic_;
@@ -674,6 +727,11 @@ class N6dForceController : public rclcpp::Node {
     rclcpp::Time last_pose_time_{};
     bool have_last_pose_stamp_{false};
     rclcpp::Time last_reacquire_time_{};
+    double tracking_error_sum_sq_{0.0};
+    std::size_t tracking_error_count_{0};
+    double last_s_robot_{0.0};
+    bool summary_logged_{false};
+    bool path_active_{false};
 };
 
 int main(int argc, char** argv) {

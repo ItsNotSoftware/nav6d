@@ -186,16 +186,22 @@ class N6dVelocityController : public rclcpp::Node {
         // Cache the incoming path and precompute sample points/cumulative lengths for fast
         // projection inside the control loop.
         if (!msg || msg->poses.empty()) {
+            if (path_active_ && !summary_logged_) {
+                log_path_summary(false);
+            }
             RCLCPP_WARN(get_logger(), "Received empty path; holding position.");
             path_.reset();
-            goal_reached_logged_ = false;
+            path_active_ = false;
             return;
         }
 
+        if (path_active_ && !summary_logged_) {
+            log_path_summary(false);
+        }
         path_ = *msg;
         preprocess_path();
         last_reacquire_time_ = now();
-        goal_reached_logged_ = false;
+        reset_execution_stats();
 
         RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
                     total_path_length_);
@@ -272,12 +278,14 @@ class N6dVelocityController : public rclcpp::Node {
         auto [s_robot, seg_idx, seg_t] = project_onto_path(p_w);
         (void)seg_idx;
         (void)seg_t;
+        last_s_robot_ = s_robot;
 
         // Periodically velocity a fresh projection to avoid sticking to stale segments.
         if ((now_time - last_reacquire_time_).seconds() > path_reacquire_period_) {
             // Periodic reacquire handles temporary deviations so projection stays fresh.
             last_reacquire_time_ = now_time;
             std::tie(s_robot, seg_idx, seg_t) = project_onto_path(p_w);
+            last_s_robot_ = s_robot;
         }
 
         const double s_remaining = std::max(0.0, total_path_length_ - s_robot);
@@ -345,6 +353,7 @@ class N6dVelocityController : public rclcpp::Node {
                                   gains_pos_.kp[1] * e_pos_b.y() + gains_pos_.kd[1] * e_vel_b.y(),
                                   gains_pos_.kp[2] * e_pos_b.z() + gains_pos_.kd[2] * e_vel_b.z());
         const double speed = v_est_w.length();
+        update_tracking_error(p_w, projected_pose);
 
         // --- Attitude PD in body frame -------------------------------------
         tf2::Quaternion q_wb_des(target_pose.orientation.x, target_pose.orientation.y,
@@ -390,20 +399,17 @@ class N6dVelocityController : public rclcpp::Node {
 
         // If within goal tolerances, hold position instead of issuing new commands.
         if (goal_status.pos_ok && goal_status.orient_ok) {
-            if (!goal_reached_logged_) {
-                RCLCPP_INFO(get_logger(), "Goal reached. Holding position at s=%.2f/%.2f.", s_robot,
-                            total_path_length_);
-                goal_reached_logged_ = true;
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
             }
             publish_twist_zero();
             return;
         }
         if (allow_in_place_rotation_ && goal_status.pos_ok) {
-            goal_reached_logged_ = false;
             publish_twist(tf2::Vector3(0.0, 0.0, 0.0), angular_cmd_b);
             return;
         }
-        goal_reached_logged_ = false;
         publish_twist(linear_cmd_b, angular_cmd_b);
     }
 
@@ -666,6 +672,46 @@ class N6dVelocityController : public rclcpp::Node {
         return stamp;
     }
 
+    void reset_execution_stats() {
+        tracking_error_sum_sq_ = 0.0;
+        tracking_error_count_ = 0U;
+        last_s_robot_ = 0.0;
+        summary_logged_ = false;
+        path_active_ = true;
+    }
+
+    void update_tracking_error(const tf2::Vector3& p_w,
+                               const std::optional<geometry_msgs::msg::Pose>& projected_pose) {
+        if (!path_active_ || summary_logged_) {
+            return;
+        }
+        tf2::Vector3 proj_w;
+        if (projected_pose) {
+            proj_w.setValue(projected_pose->position.x, projected_pose->position.y,
+                            projected_pose->position.z);
+        } else if (path_ && path_->poses.size() == 1) {
+            const auto& pos = path_->poses.front().pose.position;
+            proj_w.setValue(pos.x, pos.y, pos.z);
+        } else {
+            return;
+        }
+        const double dist2 = (p_w - proj_w).length2();
+        tracking_error_sum_sq_ += dist2;
+        ++tracking_error_count_;
+    }
+
+    void log_path_summary(bool completed) {
+        const double denom = tracking_error_count_ > 0U
+                                 ? static_cast<double>(tracking_error_count_)
+                                 : 1.0;
+        const double rms = std::sqrt(tracking_error_sum_sq_ / denom);
+        const char* label = completed ? "completed" : "aborted";
+        RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
+                    last_s_robot_, total_path_length_, rms);
+        summary_logged_ = true;
+        path_active_ = false;
+    }
+
     // --- Members -----------------------------------------------------------
     // Topics
     std::string path_topic_;
@@ -721,7 +767,11 @@ class N6dVelocityController : public rclcpp::Node {
     rclcpp::Time last_pose_stamp_{};
     bool have_last_pose_stamp_{false};
     rclcpp::Time last_reacquire_time_{};
-    bool goal_reached_logged_{false};
+    double tracking_error_sum_sq_{0.0};
+    std::size_t tracking_error_count_{0};
+    double last_s_robot_{0.0};
+    bool summary_logged_{false};
+    bool path_active_{false};
 };
 
 int main(int argc, char** argv) {
