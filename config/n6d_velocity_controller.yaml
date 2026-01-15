@@ -6,6 +6,7 @@ nav6d:
       pose_topic: /space_cobot/pose          # geometry_msgs/PoseStamped pose estimate
       imu_topic: /imu/data                   # sensor_msgs/Imu angular velocity
       cmd_velocity_topic: /space_cobot/cmd_vel  # geometry_msgs/Twist output
+      path_summary_topic: /nav6d/velocity_controller/path_execution_summary  # nav6d/PathExecutionSummary metrics
       debug_speed_topic: /nav6d/velocity_controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
       debug_projected_pose_topic: /nav6d/velocity_controller/debug/path_projection  # Pose on path the robot projects onto
       debug_target_pose_topic: /nav6d/velocity_controller/debug/carrot_pose   # Lookahead pose the controller tracks

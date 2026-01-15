@@ -23,6 +23,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "nav6d/msg/path_execution_summary.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -72,6 +73,8 @@ class N6dVelocityController : public rclcpp::Node {
         imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
         cmd_velocity_topic_ =
             declare_parameter<std::string>("cmd_velocity_topic", "/space_cobot/cmd_vel");
+        path_summary_topic_ = declare_parameter<std::string>(
+            "path_summary_topic", "/nav6d/velocity_controller/path_execution_summary");
         (void)declare_parameter<std::string>("command_frame", "body");  // legacy, ignored
         use_goal_orientation_ = declare_parameter<bool>("use_goal_orientation", false);
         allow_in_place_rotation_ = declare_parameter<bool>("allow_in_place_rotation", true);
@@ -156,6 +159,10 @@ class N6dVelocityController : public rclcpp::Node {
         // Pre-create command/debug publishers; debug topics are optional and only advertised when
         // enabled to avoid cluttering the graph.
         velocity_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_velocity_topic_, 10);
+        if (!path_summary_topic_.empty()) {
+            path_summary_pub_ =
+                create_publisher<nav6d::msg::PathExecutionSummary>(path_summary_topic_, 10);
+        }
         if (debug_enabled_) {
             if (!debug_speed_topic_.empty()) {
                 speed_pub_ = create_publisher<std_msgs::msg::Float32>(debug_speed_topic_, 10);
@@ -196,7 +203,7 @@ class N6dVelocityController : public rclcpp::Node {
         }
 
         if (path_active_ && !summary_logged_) {
-            log_path_summary(false);
+            log_path_summary(true);
         }
         path_ = *msg;
         preprocess_path();
@@ -705,6 +712,14 @@ class N6dVelocityController : public rclcpp::Node {
                                  ? static_cast<double>(tracking_error_count_)
                                  : 1.0;
         const double rms = std::sqrt(tracking_error_sum_sq_ / denom);
+        if (path_summary_pub_) {
+            nav6d::msg::PathExecutionSummary msg;
+            msg.completed = completed;
+            msg.planned_length = static_cast<float>(total_path_length_);
+            msg.executed_length = static_cast<float>(last_s_robot_);
+            msg.rms_tracking_error = static_cast<float>(rms);
+            path_summary_pub_->publish(msg);
+        }
         const char* label = completed ? "completed" : "aborted";
         RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
                     last_s_robot_, total_path_length_, rms);
@@ -718,6 +733,7 @@ class N6dVelocityController : public rclcpp::Node {
     std::string pose_topic_;
     std::string imu_topic_;
     std::string cmd_velocity_topic_;
+    std::string path_summary_topic_;
 
     // Parameters
     double control_rate_hz_{50.0};
@@ -747,6 +763,7 @@ class N6dVelocityController : public rclcpp::Node {
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_pub_;
+    rclcpp::Publisher<nav6d::msg::PathExecutionSummary>::SharedPtr path_summary_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_projected_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_target_pose_pub_;

@@ -79,7 +79,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="n6d_planner",
                 name="n6d_planner",
                 namespace="nav6d",
-                output="screen",
+                output="log",
                 parameters=[planner_config],
             ),
             Node(
@@ -87,7 +87,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="n6d_path_evaluator",
                 name="n6d_path_evaluator",
                 namespace="nav6d",
-                output="screen",
+                output="log",
                 parameters=[evaluator_config],
                 condition=IfCondition(enable_evaluator),
             ),

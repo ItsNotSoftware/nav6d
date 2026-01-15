@@ -1,0 +1,4 @@
+bool completed
+float32 planned_length
+float32 executed_length
+float32 rms_tracking_error

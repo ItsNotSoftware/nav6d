@@ -17,11 +17,14 @@ find_package(rosidl_default_generators REQUIRED)
 
 set(msg_files
   "msg/PathQuality.msg"
+  "msg/PathExecutionSummary.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
 )
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_executable(n6d_planner src/n6d_planner_node.cpp)
 ament_target_dependencies(
@@ -49,6 +52,7 @@ ament_target_dependencies(
   sensor_msgs
   tf2
 )
+target_link_libraries(n6d_force_controller ${cpp_typesupport_target})
 
 install(
   TARGETS n6d_force_controller
@@ -64,6 +68,7 @@ ament_target_dependencies(
   sensor_msgs
   tf2
 )
+target_link_libraries(n6d_velocity_controller ${cpp_typesupport_target})
 
 install(
   TARGETS n6d_velocity_controller
@@ -78,7 +83,6 @@ ament_target_dependencies(
   octomap
   octomap_msgs
 )
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(n6d_path_evaluator ${cpp_typesupport_target})
 
 install(
