@@ -8,10 +8,11 @@ nav6d:
 
       # Geometry + clearance settings.
       robot_radius: 0.225                   # Collision radius (m)
-      alpha: 1.0                           # Clearance scale factor (T = alpha * radius)
+      alpha: 0.5 
       occupancy_threshold: 0.5             # Voxel occupancy probability treated as occupied
       sample_step: 0.25                    # Minimum spacing (m) between sampled path poses
       min_path_length: 0.05                # Minimum path length before publishing (m)
+      sharp_turn_threshold_rad: 1.0472     # Angle used for sharp-turn fraction (rad)
 
       # Score weights 
       w_c: 0.25
