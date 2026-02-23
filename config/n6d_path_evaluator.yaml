@@ -17,8 +17,8 @@ nav6d:
 
       # Monte Carlo robustness estimator (published in PathQuality.heuristic as goodness = 1-risk)
       mc_particles_per_pose: 10000           # More particles = smoother estimate, higher CPU
-      mc_sigma_xy: 0.03                    # Tracking uncertainty std dev in x/y (m)
-      mc_sigma_z: 0.03                     # Tracking uncertainty std dev in z (m)
+      mc_sigma_xy: 0.032                    # Tracking uncertainty std dev in x/y (m)
+      mc_sigma_z: 0.032                     # Tracking uncertainty std dev in z (m)
       mc_sigma_clip: 3.0                   # Clip particle noise to +/- N sigma
       mc_soft_margin: 0.10                 # Clearance below this adds soft risk
-      mc_topk_fraction: 0.20               # Aggregate risk from worst x% path samples
+      mc_topk_fraction: 0.10               # Aggregate risk from worst x% path samples

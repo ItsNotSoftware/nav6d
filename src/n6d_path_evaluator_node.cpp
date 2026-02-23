@@ -212,6 +212,7 @@ private:
         double mean_local_risk{0.0};
         double max_local_risk{0.0};
         size_t sample_count{0};
+        std::vector<double> local_risks;
     };
 
     // Sample path poses directly while honoring the configured sample step.
@@ -419,6 +420,7 @@ private:
         {
             return out;
         }
+        out.local_risks = local_risks;
 
         out.mean_local_risk =
             std::accumulate(local_risks.begin(), local_risks.end(), 0.0) /
@@ -573,6 +575,12 @@ private:
         msg.path_length_m = static_cast<float>(path_length);
         msg.straight_dist_m = static_cast<float>(straight_dist);
         msg.detour_ratio = static_cast<float>(detour_ratio);
+        msg.local_risks.clear();
+        msg.local_risks.reserve(mc.local_risks.size());
+        for (const double v : mc.local_risks)
+        {
+            msg.local_risks.push_back(static_cast<float>(clamp_unit(v)));
+        }
         quality_pub_->publish(msg);
         const auto t_total_1 = std::chrono::steady_clock::now();
 

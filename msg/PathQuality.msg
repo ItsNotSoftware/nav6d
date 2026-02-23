@@ -11,3 +11,6 @@ float32 max_turn_rad
 float32 path_length_m
 float32 straight_dist_m
 float32 detour_ratio
+
+# Monte Carlo local risk profile sampled along the path (0=low risk, 1=high risk).
+float32[] local_risks
