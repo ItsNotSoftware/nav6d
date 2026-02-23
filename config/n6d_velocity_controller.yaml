@@ -6,6 +6,7 @@ nav6d:
       pose_topic: /space_cobot/pose          # geometry_msgs/PoseStamped pose estimate
       imu_topic: /imu/data                   # sensor_msgs/Imu angular velocity
       cmd_velocity_topic: /space_cobot/cmd_vel  # geometry_msgs/Twist output
+      path_summary_topic: /nav6d/velocity_controller/path_execution_summary  # nav6d/PathExecutionSummary metrics
       debug_speed_topic: /nav6d/velocity_controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
       debug_projected_pose_topic: /nav6d/velocity_controller/debug/path_projection  # Pose on path the robot projects onto
       debug_target_pose_topic: /nav6d/velocity_controller/debug/carrot_pose   # Lookahead pose the controller tracks
@@ -20,7 +21,11 @@ nav6d:
       pos_tolerance: 0.05                    # Goal position tolerance (m)
       orientation_tolerance_rad: 0.08        # Goal orientation tolerance (rad, roll/pitch/yaw)
       allow_in_place_rotation: true          # Allow rotation when position tolerance is satisfied
+      zero_cmd_threshold: 0.001              # Treat near-zero commands as completion when at path end
+      path_end_tolerance: 0.001              # Arc length tolerance for "at end of path" (m)
+      min_path_length: 0.05                  # Minimum path length before publishing summaries (m)
       debug_enabled: false                   # Disable verbose logs/debug publishers
+      runtime_info_logs_enabled: false        # Runtime INFO logs (not init/warn/error)
 
       # Linear (xyz) PD gains
       kp_linear: [5.8, 5.8, 5.8]

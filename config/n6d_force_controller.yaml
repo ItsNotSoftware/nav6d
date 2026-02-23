@@ -6,6 +6,7 @@ nav6d:
       pose_topic: /space_cobot/pose            # geometry_msgs/PoseStamped pose estimate
       imu_topic: /imu/data                     # sensor_msgs/Imu angular velocity
       cmd_force_topic: /space_cobot/cmd_force  # geometry_msgs/Wrench output
+      path_summary_topic: /nav6d/force_controller/path_execution_summary  # nav6d/PathExecutionSummary metrics
       use_goal_orientation: false              # If true, always target the final goal orientation
       debug_speed_topic: /nav6d/force_controller/debug/linear_speed        # std_msgs/Float32 scalar speed estimate
       debug_projected_pose_topic: /nav6d/force_controller/debug/path_projection  # Pose on path the robot projects onto
@@ -22,9 +23,13 @@ nav6d:
       pos_tolerance: 0.15                      # Goal position tolerance (m)
       orientation_tolerance_rad: 0.08          # Goal orientation tolerance (rad), all axes
       allow_in_place_rotation: true            # Allow rotation when position tolerance is satisfied
+      zero_cmd_threshold: 0.001                # Treat near-zero commands as completion when at path end
+      path_end_tolerance: 0.001                # Arc length tolerance for "at end of path" (m)
+      min_path_length: 0.05                    # Minimum path length before publishing summaries (m)
       max_velocity_mps: 0.8                    # Maximum allowed linear speed before braking (m/s)
       velocity_brake_gain: 3.5                 # Force gain applied when braking above max velocity
       debug_enabled: false                     # Enable verbose logs and debug publishers
+      runtime_info_logs_enabled: true          # Runtime INFO logs (not init/warn/error)
 
       # Linear (xyz) PD gains
       kp_linear: [13.8, 13.8, 13.8]               # Per-axis KP for xyz position errors

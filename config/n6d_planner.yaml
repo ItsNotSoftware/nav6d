@@ -9,7 +9,7 @@ nav6d:
       map_frame: world                         # TF frame in which path poses are expressed
 
       # Collision model and search limits.
-      robot_radius: 0.40                       # Radius (m) used to inflate obstacles during collision checks
+      robot_radius: 0.225                       # Radius (m) used to inflate obstacles during collision checks
       occupancy_threshold: 0.5                 # Voxel occupancy probability treated as occupied
       max_search_range: 25.0                   # Maximum straight-line distance (m) the planner will search
       max_expansions: 60000                    # A* node expansion cap to avoid runaway searches
@@ -21,3 +21,4 @@ nav6d:
       # Debug aids for RViz visualisation.
       debug_markers: true                      # Publish path markers when true
       marker_topic: /nav6d/planner/path_markers  # MarkerArray output topic
+      runtime_info_logs_enabled: false          # Runtime INFO logs (not init/warn/error)

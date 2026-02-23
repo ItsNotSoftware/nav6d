@@ -23,6 +23,8 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "nav6d/msg/path_execution_summary.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -52,6 +54,8 @@ class N6dVelocityController : public rclcpp::Node {
     // Constructor wires up parameters, ROS interfaces, and timer scheduling.
     N6dVelocityController() : rclcpp::Node("n6d_velocity_controller") {
         declare_parameters();
+        runtime_log_params_cb_handle_ = add_on_set_parameters_callback(
+            std::bind(&N6dVelocityController::on_set_parameters, this, std::placeholders::_1));
         init_subscriptions();
         init_publishers();
         init_timer();
@@ -72,6 +76,8 @@ class N6dVelocityController : public rclcpp::Node {
         imu_topic_ = declare_parameter<std::string>("imu_topic", "/imu/data");
         cmd_velocity_topic_ =
             declare_parameter<std::string>("cmd_velocity_topic", "/space_cobot/cmd_vel");
+        path_summary_topic_ = declare_parameter<std::string>(
+            "path_summary_topic", "/nav6d/velocity_controller/path_execution_summary");
         (void)declare_parameter<std::string>("command_frame", "body");  // legacy, ignored
         use_goal_orientation_ = declare_parameter<bool>("use_goal_orientation", false);
         allow_in_place_rotation_ = declare_parameter<bool>("allow_in_place_rotation", true);
@@ -85,6 +91,11 @@ class N6dVelocityController : public rclcpp::Node {
         vel_alpha_ = declare_parameter("velocity_ema_alpha", 0.6);
         pos_tolerance_ = declare_parameter("pos_tolerance", 0.05);
         orientation_tolerance_rad_ = declare_parameter("orientation_tolerance_rad", 0.08);
+        zero_cmd_threshold_ = declare_parameter("zero_cmd_threshold", 1e-3);
+        path_end_tolerance_ = declare_parameter("path_end_tolerance", 1e-3);
+        min_path_length_ = declare_parameter("min_path_length", 0.05);
+        stall_progress_threshold_m_ = declare_parameter("stall_progress_threshold_m", 0.05);
+        stall_timeout_s_ = declare_parameter("stall_timeout_s", 3.0);
         const double legacy_yaw_tolerance =
             declare_parameter("yaw_tolerance_rad", orientation_tolerance_rad_);
         if (std::abs(legacy_yaw_tolerance - orientation_tolerance_rad_) > 1e-9) {
@@ -93,6 +104,7 @@ class N6dVelocityController : public rclcpp::Node {
             orientation_tolerance_rad_ = legacy_yaw_tolerance;
         }
         debug_enabled_ = declare_parameter("debug_enabled", false);
+        runtime_info_logs_enabled_ = declare_parameter("runtime_info_logs_enabled", true);
         debug_speed_topic_ = declare_parameter<std::string>(
             "debug_speed_topic", "/nav6d/velocity_controller/debug/linear_speed");
         debug_projected_pose_topic_ = declare_parameter<std::string>(
@@ -135,6 +147,23 @@ class N6dVelocityController : public rclcpp::Node {
                                              pick_limit(max_torque, 2));
     }
 
+    rcl_interfaces::msg::SetParametersResult on_set_parameters(
+        const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& p : params) {
+            if (p.get_name() == "runtime_info_logs_enabled") {
+                if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful = false;
+                    result.reason = "runtime_info_logs_enabled must be bool";
+                    return result;
+                }
+                runtime_info_logs_enabled_ = p.as_bool();
+            }
+        }
+        return result;
+    }
+
     // --- ROS interface wiring ----------------------------------------------
     // Subscribe to planner path, robot pose, and IMU topics.
     void init_subscriptions() {
@@ -156,6 +185,10 @@ class N6dVelocityController : public rclcpp::Node {
         // Pre-create command/debug publishers; debug topics are optional and only advertised when
         // enabled to avoid cluttering the graph.
         velocity_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_velocity_topic_, 10);
+        if (!path_summary_topic_.empty()) {
+            path_summary_pub_ =
+                create_publisher<nav6d::msg::PathExecutionSummary>(path_summary_topic_, 10);
+        }
         if (debug_enabled_) {
             if (!debug_speed_topic_.empty()) {
                 speed_pub_ = create_publisher<std_msgs::msg::Float32>(debug_speed_topic_, 10);
@@ -186,19 +219,27 @@ class N6dVelocityController : public rclcpp::Node {
         // Cache the incoming path and precompute sample points/cumulative lengths for fast
         // projection inside the control loop.
         if (!msg || msg->poses.empty()) {
+            if (path_active_ && !summary_logged_) {
+                log_path_summary(false);
+            }
             RCLCPP_WARN(get_logger(), "Received empty path; holding position.");
             path_.reset();
-            goal_reached_logged_ = false;
+            path_active_ = false;
             return;
         }
 
+        if (path_active_ && !summary_logged_) {
+            log_path_summary(true);
+        }
         path_ = *msg;
         preprocess_path();
         last_reacquire_time_ = now();
-        goal_reached_logged_ = false;
+        reset_execution_stats();
 
-        RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
-                    total_path_length_);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
+                        total_path_length_);
+        }
     }
 
     // Cache the latest pose sample from localization.
@@ -272,12 +313,14 @@ class N6dVelocityController : public rclcpp::Node {
         auto [s_robot, seg_idx, seg_t] = project_onto_path(p_w);
         (void)seg_idx;
         (void)seg_t;
+        last_s_robot_ = s_robot;
 
         // Periodically velocity a fresh projection to avoid sticking to stale segments.
         if ((now_time - last_reacquire_time_).seconds() > path_reacquire_period_) {
             // Periodic reacquire handles temporary deviations so projection stays fresh.
             last_reacquire_time_ = now_time;
             std::tie(s_robot, seg_idx, seg_t) = project_onto_path(p_w);
+            last_s_robot_ = s_robot;
         }
 
         const double s_remaining = std::max(0.0, total_path_length_ - s_robot);
@@ -336,6 +379,26 @@ class N6dVelocityController : public rclcpp::Node {
             target_pose.orientation = path_->poses.back().pose.orientation;
         }
 
+        // Abort and emit a final "aborted" summary when path progress stalls for too long.
+        if (path_active_ && !summary_logged_) {
+            if (s_robot > best_s_robot_ + stall_progress_threshold_m_) {
+                best_s_robot_ = s_robot;
+                last_progress_time_ = now_time;
+            }
+            const bool near_end = (total_path_length_ - s_robot) <= path_end_tolerance_;
+            const double stall_elapsed = (now_time - last_progress_time_).seconds();
+            if (!goal_status.pos_ok && !near_end && stall_elapsed > stall_timeout_s_) {
+                RCLCPP_WARN(get_logger(),
+                            "Path progress stalled for %.2f s at s=%.2f/%.2f. Marking as aborted.",
+                            stall_elapsed, s_robot, total_path_length_);
+                last_s_robot_ = s_robot;
+                log_path_summary(false);
+                publish_twist_zero();
+                path_.reset();
+                return;
+            }
+        }
+
         // --- Linear PD in world, then rotate to body -----------------------
         tf2::Vector3 e_pos_w = p_des - p_w;
         tf2::Vector3 e_vel_w = v_des - v_est_w;
@@ -345,6 +408,7 @@ class N6dVelocityController : public rclcpp::Node {
                                   gains_pos_.kp[1] * e_pos_b.y() + gains_pos_.kd[1] * e_vel_b.y(),
                                   gains_pos_.kp[2] * e_pos_b.z() + gains_pos_.kd[2] * e_vel_b.z());
         const double speed = v_est_w.length();
+        update_tracking_error(p_w, projected_pose);
 
         // --- Attitude PD in body frame -------------------------------------
         tf2::Quaternion q_wb_des(target_pose.orientation.x, target_pose.orientation.y,
@@ -378,32 +442,45 @@ class N6dVelocityController : public rclcpp::Node {
         // --- Clamp and publish ---------------------------------------------
         linear_cmd_b = clamp_each(linear_cmd_b, max_linear_cmd_body_);
         angular_cmd_b = clamp_each(angular_cmd_b, max_angular_cmd_body_);
+        const bool at_path_end = (total_path_length_ - s_target) <= path_end_tolerance_;
+        if (at_path_end && linear_cmd_b.length() <= zero_cmd_threshold_ &&
+            angular_cmd_b.length() <= zero_cmd_threshold_) {
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
+            publish_twist_zero();
+            return;
+        }
         constexpr std::chrono::milliseconds kInfoThrottle{1000};
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kInfoThrottle.count(),
-                             "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m "
-                             "|linear_cmd_b|=%.2f |angular_cmd_b|=%.2f speed=%.2f m/s",
-                             target_sample.segment_index, total_segments,
-                             target_sample.segment_t, s_target, total_path_length_,
-                             e_pos_w.length(), linear_cmd_b.length(), angular_cmd_b.length(),
-                             speed);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), kInfoThrottle.count(),
+                                 "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m "
+                                 "|linear_cmd_b|=%.2f |angular_cmd_b|=%.2f speed=%.2f m/s",
+                                 target_sample.segment_index, total_segments,
+                                 target_sample.segment_t, s_target, total_path_length_,
+                                 e_pos_w.length(), linear_cmd_b.length(), angular_cmd_b.length(),
+                                 speed);
+        }
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
         // If within goal tolerances, hold position instead of issuing new commands.
         if (goal_status.pos_ok && goal_status.orient_ok) {
-            if (!goal_reached_logged_) {
-                RCLCPP_INFO(get_logger(), "Goal reached. Holding position at s=%.2f/%.2f.", s_robot,
-                            total_path_length_);
-                goal_reached_logged_ = true;
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
             }
             publish_twist_zero();
             return;
         }
         if (allow_in_place_rotation_ && goal_status.pos_ok) {
-            goal_reached_logged_ = false;
+            if (!summary_logged_) {
+                last_s_robot_ = s_robot;
+                log_path_summary(true);
+            }
             publish_twist(tf2::Vector3(0.0, 0.0, 0.0), angular_cmd_b);
             return;
         }
-        goal_reached_logged_ = false;
         publish_twist(linear_cmd_b, angular_cmd_b);
     }
 
@@ -666,12 +743,70 @@ class N6dVelocityController : public rclcpp::Node {
         return stamp;
     }
 
+    void reset_execution_stats() {
+        tracking_error_sum_sq_ = 0.0;
+        tracking_error_count_ = 0U;
+        last_s_robot_ = 0.0;
+        best_s_robot_ = 0.0;
+        last_progress_time_ = now();
+        summary_logged_ = false;
+        path_active_ = true;
+    }
+
+    void update_tracking_error(const tf2::Vector3& p_w,
+                               const std::optional<geometry_msgs::msg::Pose>& projected_pose) {
+        if (!path_active_ || summary_logged_) {
+            return;
+        }
+        tf2::Vector3 proj_w;
+        if (projected_pose) {
+            proj_w.setValue(projected_pose->position.x, projected_pose->position.y,
+                            projected_pose->position.z);
+        } else if (path_ && path_->poses.size() == 1) {
+            const auto& pos = path_->poses.front().pose.position;
+            proj_w.setValue(pos.x, pos.y, pos.z);
+        } else {
+            return;
+        }
+        const double dist2 = (p_w - proj_w).length2();
+        tracking_error_sum_sq_ += dist2;
+        ++tracking_error_count_;
+    }
+
+    void log_path_summary(bool completed) {
+        if (total_path_length_ < min_path_length_) {
+            summary_logged_ = true;
+            path_active_ = false;
+            return;
+        }
+        const double denom = tracking_error_count_ > 0U
+                                 ? static_cast<double>(tracking_error_count_)
+                                 : 1.0;
+        const double rms = std::sqrt(tracking_error_sum_sq_ / denom);
+        if (path_summary_pub_) {
+            nav6d::msg::PathExecutionSummary msg;
+            msg.completed = completed;
+            msg.planned_length = static_cast<float>(total_path_length_);
+            msg.executed_length = static_cast<float>(last_s_robot_);
+            msg.rms_tracking_error = static_cast<float>(rms);
+            path_summary_pub_->publish(msg);
+        }
+        const char* label = completed ? "completed" : "aborted";
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
+                        last_s_robot_, total_path_length_, rms);
+        }
+        summary_logged_ = true;
+        path_active_ = false;
+    }
+
     // --- Members -----------------------------------------------------------
     // Topics
     std::string path_topic_;
     std::string pose_topic_;
     std::string imu_topic_;
     std::string cmd_velocity_topic_;
+    std::string path_summary_topic_;
 
     // Parameters
     double control_rate_hz_{50.0};
@@ -682,9 +817,15 @@ class N6dVelocityController : public rclcpp::Node {
     double vel_alpha_{0.6};
     double pos_tolerance_{0.05};
     double orientation_tolerance_rad_{0.08};
+    double zero_cmd_threshold_{1e-3};
+    double path_end_tolerance_{1e-3};
+    double min_path_length_{0.05};
+    double stall_progress_threshold_m_{0.05};
+    double stall_timeout_s_{3.0};
     bool use_goal_orientation_{false};
     bool allow_in_place_rotation_{true};
     bool debug_enabled_{false};
+    bool runtime_info_logs_enabled_{true};
     std::string debug_speed_topic_{"/nav6d/velocity_controller/debug/linear_speed"};
     std::string debug_projected_pose_topic_{"/nav6d/velocity_controller/debug/path_projection"};
     std::string debug_target_pose_topic_{"/nav6d/velocity_controller/debug/carrot_pose"};
@@ -701,10 +842,12 @@ class N6dVelocityController : public rclcpp::Node {
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_pub_;
+    rclcpp::Publisher<nav6d::msg::PathExecutionSummary>::SharedPtr path_summary_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_projected_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_target_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr debug_error_pub_;
+    OnSetParametersCallbackHandle::SharedPtr runtime_log_params_cb_handle_;
 
     // State
     std::optional<nav_msgs::msg::Path> path_;
@@ -721,7 +864,13 @@ class N6dVelocityController : public rclcpp::Node {
     rclcpp::Time last_pose_stamp_{};
     bool have_last_pose_stamp_{false};
     rclcpp::Time last_reacquire_time_{};
-    bool goal_reached_logged_{false};
+    double tracking_error_sum_sq_{0.0};
+    std::size_t tracking_error_count_{0};
+    double last_s_robot_{0.0};
+    double best_s_robot_{0.0};
+    rclcpp::Time last_progress_time_{};
+    bool summary_logged_{false};
+    bool path_active_{false};
 };
 
 int main(int argc, char** argv) {

@@ -32,6 +32,7 @@
 #include "octomap/octomap.h"
 #include "octomap_msgs/conversions.h"
 #include "octomap_msgs/msg/octomap.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 
@@ -107,6 +108,9 @@ class N6dPlanner : public rclcpp::Node {
         debug_markers_ = declare_parameter("debug_markers", true);
         marker_topic_ =
             declare_parameter<std::string>("marker_topic", "/nav6d/planner/path_markers");
+        runtime_info_logs_enabled_ = declare_parameter("runtime_info_logs_enabled", true);
+        runtime_log_params_cb_handle_ = add_on_set_parameters_callback(
+            std::bind(&N6dPlanner::on_set_parameters, this, std::placeholders::_1));
 
         if (line_sample_step_ <= 0.0) {
             RCLCPP_WARN(
@@ -161,11 +165,15 @@ class N6dPlanner : public rclcpp::Node {
     // Receive user goals and kick off the planner if idle.
     void goal_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         pending_goal_ = *msg;  // always keep the latest requested goal
-        RCLCPP_INFO(get_logger(), "New goal received: (%.2f, %.2f, %.2f).", msg->pose.position.x,
-                    msg->pose.position.y, msg->pose.position.z);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "New goal received: (%.2f, %.2f, %.2f).", msg->pose.position.x,
+                        msg->pose.position.y, msg->pose.position.z);
+        }
 
         if (planning_in_progress_) {
-            RCLCPP_INFO(get_logger(), "Planning in progress; this goal will run next.");
+            if (runtime_info_logs_enabled_) {
+                RCLCPP_INFO(get_logger(), "Planning in progress; this goal will run next.");
+            }
             return;
         }
         plan_latest_goal();  // trigger immediately
@@ -199,16 +207,20 @@ class N6dPlanner : public rclcpp::Node {
         const bool ok = plan_path(path_msg);  // core planning call
         const auto t1 = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        RCLCPP_INFO(get_logger(), "Plan computation time: %.3f ms (%s).", ms,
-                    ok ? "success" : "failure");
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "Plan computation time: %.3f ms (%s).", ms,
+                        ok ? "success" : "failure");
+        }
         // --------------------------------------
 
         // Publish results if successful, otherwise clear any existing markers.
         if (ok) {
             path_pub_->publish(path_msg);
             publish_debug_markers(path_msg);
-            RCLCPP_INFO(get_logger(), "Published path with %zu poses (length %.2f m).",
-                        path_msg.poses.size(), estimate_path_length(path_msg));
+            if (runtime_info_logs_enabled_) {
+                RCLCPP_INFO(get_logger(), "Published path with %zu poses (length %.2f m).",
+                            path_msg.poses.size(), estimate_path_length(path_msg));
+            }
         } else {
             clear_debug_markers();
             RCLCPP_WARN(get_logger(), "Failed to find a collision-free path.");
@@ -247,7 +259,9 @@ class N6dPlanner : public rclcpp::Node {
 
         if (line_sample_step_ <= 0.0) {
             line_sample_step_ = octree_->getResolution() * 0.5;
-            RCLCPP_INFO(get_logger(), "line_sample_step set to %.3f m.", line_sample_step_);
+            if (runtime_info_logs_enabled_) {
+                RCLCPP_INFO(get_logger(), "line_sample_step set to %.3f m.", line_sample_step_);
+            }
         }
     }
 
@@ -255,8 +269,10 @@ class N6dPlanner : public rclcpp::Node {
     bool plan_path(nav_msgs::msg::Path& path_out) {
         const auto& start_p = current_pose_->pose.position;
         const auto& goal_p = goal_pose_->pose.position;
-        RCLCPP_INFO(get_logger(), "Planning from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f).",
-                    start_p.x, start_p.y, start_p.z, goal_p.x, goal_p.y, goal_p.z);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "Planning from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f).",
+                        start_p.x, start_p.y, start_p.z, goal_p.x, goal_p.y, goal_p.z);
+        }
 
         if (!octree_) return false;
 
@@ -759,6 +775,23 @@ class N6dPlanner : public rclcpp::Node {
         marker_pub_->publish(arr);
     }
 
+    rcl_interfaces::msg::SetParametersResult on_set_parameters(
+        const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& p : params) {
+            if (p.get_name() == "runtime_info_logs_enabled") {
+                if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful = false;
+                    result.reason = "runtime_info_logs_enabled must be bool";
+                    return result;
+                }
+                runtime_info_logs_enabled_ = p.as_bool();
+            }
+        }
+        return result;
+    }
+
     // --- Members: subscriptions/publishers plus cached state used across planning cycles.
     rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr map_sub_;
     // Latest robot pose sample.
@@ -788,11 +821,13 @@ class N6dPlanner : public rclcpp::Node {
     std::string map_frame_{"map"};     // Output frame id.
     bool slerp_orientation_{false};    // Interpolate orientation with SLERP when true.
     bool debug_markers_{false};        // Whether to publish RViz markers.
+    bool runtime_info_logs_enabled_{true};  // Runtime INFO logging (not startup/warn/error).
     std::string marker_topic_;         // MarkerArray output topic.
 
     // state
     bool planning_in_progress_{false};  // True while the planner is solving the current goal.
     octomap_msgs::msg::Octomap::SharedPtr deferred_octomap_msg_;
+    OnSetParametersCallbackHandle::SharedPtr runtime_log_params_cb_handle_;
 };
 
 int main(int argc, char** argv) {

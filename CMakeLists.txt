@@ -13,6 +13,18 @@ find_package(octomap REQUIRED)
 find_package(octomap_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+set(msg_files
+  "msg/PathQuality.msg"
+  "msg/PathExecutionSummary.msg"
+)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  ${msg_files}
+)
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_executable(n6d_planner src/n6d_planner_node.cpp)
 ament_target_dependencies(
@@ -40,6 +52,7 @@ ament_target_dependencies(
   sensor_msgs
   tf2
 )
+target_link_libraries(n6d_force_controller ${cpp_typesupport_target})
 
 install(
   TARGETS n6d_force_controller
@@ -55,11 +68,29 @@ ament_target_dependencies(
   sensor_msgs
   tf2
 )
+target_link_libraries(n6d_velocity_controller ${cpp_typesupport_target})
 
 install(
   TARGETS n6d_velocity_controller
   DESTINATION lib/${PROJECT_NAME}
 )
+
+add_executable(n6d_path_evaluator src/n6d_path_evaluator_node.cpp)
+ament_target_dependencies(
+  n6d_path_evaluator
+  rclcpp
+  nav_msgs
+  octomap
+  octomap_msgs
+)
+target_link_libraries(n6d_path_evaluator ${cpp_typesupport_target})
+
+install(
+  TARGETS n6d_path_evaluator
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_export_dependencies(rosidl_default_runtime)
 
 install(
   DIRECTORY config/
