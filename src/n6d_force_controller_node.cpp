@@ -81,6 +81,8 @@ class N6dForceController : public rclcpp::Node {
         zero_cmd_threshold_ = declare_parameter("zero_cmd_threshold", 1e-3);
         path_end_tolerance_ = declare_parameter("path_end_tolerance", 1e-3);
         min_path_length_ = declare_parameter("min_path_length", 0.05);
+        stall_progress_threshold_m_ = declare_parameter("stall_progress_threshold_m", 0.05);
+        stall_timeout_s_ = declare_parameter("stall_timeout_s", 3.0);
         const double legacy_yaw_tolerance =
             declare_parameter("yaw_tolerance_rad", orientation_tolerance_rad_);
         if (std::abs(legacy_yaw_tolerance - orientation_tolerance_rad_) > 1e-9) {
@@ -319,6 +321,26 @@ class N6dForceController : public rclcpp::Node {
         const GoalStatus goal_status = check_goal_status(p_w, q_wb);
         if (allow_in_place_rotation_ && goal_status.pos_ok && path_ && !path_->poses.empty()) {
             target_pose.orientation = path_->poses.back().pose.orientation;
+        }
+
+        // Abort and emit a final "aborted" summary when path progress stalls for too long.
+        if (path_active_ && !summary_logged_) {
+            if (s_robot > best_s_robot_ + stall_progress_threshold_m_) {
+                best_s_robot_ = s_robot;
+                last_progress_time_ = now_time;
+            }
+            const bool near_end = (total_path_length_ - s_robot) <= path_end_tolerance_;
+            const double stall_elapsed = (now_time - last_progress_time_).seconds();
+            if (!goal_status.pos_ok && !near_end && stall_elapsed > stall_timeout_s_) {
+                RCLCPP_WARN(get_logger(),
+                            "Path progress stalled for %.2f s at s=%.2f/%.2f. Marking as aborted.",
+                            stall_elapsed, s_robot, total_path_length_);
+                last_s_robot_ = s_robot;
+                log_path_summary(false);
+                publish_wrench_zero();
+                path_.reset();
+                return;
+            }
         }
 
         // Linear PD in world frame; rotate results to body frame.
@@ -658,6 +680,8 @@ class N6dForceController : public rclcpp::Node {
         tracking_error_sum_sq_ = 0.0;
         tracking_error_count_ = 0U;
         last_s_robot_ = 0.0;
+        best_s_robot_ = 0.0;
+        last_progress_time_ = now();
         summary_logged_ = false;
         path_active_ = true;
     }
@@ -727,6 +751,8 @@ class N6dForceController : public rclcpp::Node {
     double zero_cmd_threshold_{1e-3};
     double path_end_tolerance_{1e-3};
     double min_path_length_{0.05};
+    double stall_progress_threshold_m_{0.05};
+    double stall_timeout_s_{3.0};
     double max_velocity_mps_{0.0};
     double velocity_brake_gain_{6.0};
     bool use_goal_orientation_{false};
@@ -772,6 +798,8 @@ class N6dForceController : public rclcpp::Node {
     double tracking_error_sum_sq_{0.0};
     std::size_t tracking_error_count_{0};
     double last_s_robot_{0.0};
+    double best_s_robot_{0.0};
+    rclcpp::Time last_progress_time_{};
     bool summary_logged_{false};
     bool path_active_{false};
 };

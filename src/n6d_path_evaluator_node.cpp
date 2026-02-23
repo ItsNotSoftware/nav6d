@@ -312,8 +312,11 @@ private:
         const double turn_score = 1.0 - clamp_unit(max_turn_angle / M_PI);
 
         // Clearance and narrowness metrics.
+        const double threshold = std::max(alpha_ * robot_radius_, 1e-6);
         double clearance_score = 0.0;
         double narrow_score = 0.0;
+        double min_clearance_m = threshold;
+        double narrow_fraction = 0.0;
         if (occupied_centers_.empty())
         {
             clearance_score = 1.0;
@@ -321,7 +324,6 @@ private:
         }
         else
         {
-            const double threshold = std::max(alpha_ * robot_radius_, 1e-6);
             double min_clearance = std::numeric_limits<double>::infinity();
             size_t narrow_count = 0;
 
@@ -340,10 +342,15 @@ private:
             const size_t sample_count = samples.size();
             if (sample_count > 0)
             {
+                min_clearance_m = min_clearance;
+                narrow_fraction = static_cast<double>(narrow_count) / static_cast<double>(sample_count);
                 clearance_score = clamp_unit(min_clearance / threshold);
-                narrow_score = 1.0 - static_cast<double>(narrow_count) / sample_count;
+                narrow_score = 1.0 - narrow_fraction;
             }
         }
+
+        const double detour_ratio =
+            (straight_dist > 1e-6) ? (path_length / straight_dist) : 1.0;
 
         const double w_c = get_parameter("w_c").as_double();
         const double w_n = get_parameter("w_n").as_double();
@@ -357,6 +364,12 @@ private:
         msg.efficiency_score = static_cast<float>(efficiency_score);
         msg.heuristic = static_cast<float>(w_c * clearance_score + w_n * narrow_score +
                                            w_t * turn_score + w_e * efficiency_score);
+        msg.min_clearance_m = static_cast<float>(min_clearance_m);
+        msg.narrow_fraction = static_cast<float>(narrow_fraction);
+        msg.max_turn_rad = static_cast<float>(max_turn_angle);
+        msg.path_length_m = static_cast<float>(path_length);
+        msg.straight_dist_m = static_cast<float>(straight_dist);
+        msg.detour_ratio = static_cast<float>(detour_ratio);
         quality_pub_->publish(msg);
     }
 
