@@ -33,7 +33,7 @@ The package is split into a planner, two controller variants, and a path evaluat
 - `n6d_planner`: consumes the OctoMap and robot pose, then computes a collision-free 3D path (`nav_msgs/Path`) with consistent orientations along the way.
 - `n6d_velocity_controller`: consumes the planned path, current pose, and IMU; it projects the robot onto the path, selects a lookahead “carrot” pose, runs a 6‑DoF PD law, and publishes body-frame velocity commands (`geometry_msgs/Twist`).
 - `n6d_force_controller`: shares the same control core but publishes wrench commands (`geometry_msgs/Wrench`) for actuators that expect force/torque inputs.
-- `n6d_path_evaluator`: scores any `nav_msgs/Path` against the OctoMap and publishes `nav6d/msg/PathQuality` on `/nav6d/path_quality`.
+- `n6d_path_evaluator`: scores any `nav_msgs/Path` against the OctoMap and publishes `nav6d/msg/PathQuality` on `/nav6d/path_quality`. It computes geometric metrics (clearance/narrowness/turn/efficiency) and a Monte Carlo path robustness estimate.
 
 Planner and the selected controller are typically launched together via `n6d.launch.py`, but you can also run only the planner or only a controller.
 
@@ -44,6 +44,7 @@ Planner and the selected controller are typically launched together via `n6d.lau
 * SLERP-based orientation planning along the path
 * 6-DoF PD controller for trajectory tracking (position + attitude)
 * Planner-agnostic path quality scoring against OctoMap geometry
+* Monte Carlo path robustness estimate for simple "good vs risky" visualization
 
 
 ## Getting Started
@@ -67,6 +68,7 @@ sudo apt install ros-${ROS_DISTRO}-octomap-msgs
 An active OctoMap is also required, but it can be published by **any** package that provides an `octomap_msgs/msg/Octomap` topic.
 
 The path evaluator publishes `nav6d/msg/PathQuality`, which is defined in the `nav6d` package.
+The message layout is unchanged; for backward compatibility, `PathQuality.heuristic` is now used to carry the Monte Carlo path goodness score (`1 - risk`).
 
 ### Recommended
 
@@ -139,7 +141,7 @@ ros2 launch nav6d n6d_path_evaluator.launch.py
 | :---------------------------- | :----------------------------------- | :----------------------------------- |
 | `/nav6d/planner/path`         | `nav_msgs/msg/Path`                  | Generated waypoint path              |
 | `/nav6d/planner/path_markers` | `visualization_msgs/msg/MarkerArray` | Debug visualization markers for RViz |
-| `/nav6d/path_quality`         | `nav6d/msg/PathQuality`              | Path quality scores from evaluator   |
+| `/nav6d/path_quality`         | `nav6d/msg/PathQuality`              | Geometric metrics + MC path goodness |
 | `/space_cobot/cmd_vel`        | `geometry_msgs/msg/Twist`            | Velocity controller output           |
 | `/space_cobot/cmd_force`      | `geometry_msgs/msg/Wrench`           | Force controller output              |
 
@@ -204,13 +206,27 @@ Path quality parameters from `config/n6d_path_evaluator.yaml`:
 | `alpha`               | Clearance scale factor (T = alpha * radius) |
 | `occupancy_threshold` | Probability threshold for occupied voxels   |
 | `sample_step`         | Min spacing between sampled poses (m)       |
-| `w_c` / `w_n` / `w_t` / `w_e` | Weights for clearance, narrow, turn, efficiency |
+| `mc_particles_per_pose` | Number of particles sampled per path point |
+| `mc_sigma_xy` / `mc_sigma_z` | Position uncertainty std dev (m) in XY/Z |
+| `mc_sigma_clip`       | Clip particle noise to ±N sigma             |
+| `mc_soft_margin`      | Clearance margin where soft risk ramps up   |
+| `mc_topk_fraction`    | Aggregate final path risk from worst fraction of sampled points |
 
 Tune these parameters to match your robot geometry, map resolution, and search performance requirements.
 `yaw_tolerance_rad` is still accepted for legacy configs, but `orientation_tolerance_rad` is preferred.
 The bundled `n6d_planner.yaml` uses the `/**:` wildcard so the same values apply whether you launch the node directly (`ros2 run`) or via `ros2 launch` with a namespace.
 
 > **Performance tip:** OctoMap resolution has a noticeable impact on planning speed—finer grids explode the number of voxels the A* search and collision checks must touch. In our tests a 0.2 m resolution offered a good trade-off between fidelity and runtime; use coarser maps if you need faster replans.
+
+### Path Evaluator Output Notes (Monte Carlo)
+
+- `clearance_score`, `narrow_score`, `turn_score`, and `efficiency_score` are still published as geometric diagnostics.
+- `heuristic` now represents **Monte Carlo path goodness** in `[0, 1]` (higher is better).
+- A simple interpretation for UI coloring is:
+  - green: high goodness
+  - yellow: medium goodness
+  - red: low goodness
+- The Monte Carlo score estimates geometric robustness under pose uncertainty; it is **not** a full controller/physics success simulation.
 
 
 

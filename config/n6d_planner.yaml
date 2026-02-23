@@ -21,3 +21,4 @@ nav6d:
       # Debug aids for RViz visualisation.
       debug_markers: true                      # Publish path markers when true
       marker_topic: /nav6d/planner/path_markers  # MarkerArray output topic
+      runtime_info_logs_enabled: false          # Runtime INFO logs (not init/warn/error)

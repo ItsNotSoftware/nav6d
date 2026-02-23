@@ -22,6 +22,7 @@
 #include "geometry_msgs/msg/wrench.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "nav6d/msg/path_execution_summary.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -47,6 +48,8 @@ class N6dForceController : public rclcpp::Node {
     // Constructor wires up parameters, subscriptions, publishers, and timer wiring.
     N6dForceController() : rclcpp::Node("n6d_force_controller") {
         declare_parameters();
+        runtime_log_params_cb_handle_ = add_on_set_parameters_callback(
+            std::bind(&N6dForceController::on_set_parameters, this, std::placeholders::_1));
         init_subscriptions();
         init_publishers();
         init_timer();
@@ -93,6 +96,7 @@ class N6dForceController : public rclcpp::Node {
         max_velocity_mps_ = declare_parameter("max_velocity_mps", 0.0);
         velocity_brake_gain_ = declare_parameter("velocity_brake_gain", 6.0);
         debug_enabled_ = declare_parameter("debug_enabled", false);
+        runtime_info_logs_enabled_ = declare_parameter("runtime_info_logs_enabled", true);
         debug_speed_topic_ = declare_parameter<std::string>(
             "debug_speed_topic", "/nav6d/force_controller/debug/linear_speed");
         debug_projected_pose_topic_ = declare_parameter<std::string>(
@@ -134,6 +138,23 @@ class N6dForceController : public rclcpp::Node {
                                        pick_limit(max_force, 2));
         max_torque_body_ = tf2::Vector3(pick_limit(max_torque, 0), pick_limit(max_torque, 1),
                                         pick_limit(max_torque, 2));
+    }
+
+    rcl_interfaces::msg::SetParametersResult on_set_parameters(
+        const std::vector<rclcpp::Parameter>& params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& p : params) {
+            if (p.get_name() == "runtime_info_logs_enabled") {
+                if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful = false;
+                    result.reason = "runtime_info_logs_enabled must be bool";
+                    return result;
+                }
+                runtime_info_logs_enabled_ = p.as_bool();
+            }
+        }
+        return result;
     }
 
     // Wire subscriptions, publishers, and control timer (mirrors the velocity controller).
@@ -203,8 +224,10 @@ class N6dForceController : public rclcpp::Node {
         last_reacquire_time_ = now();
         reset_execution_stats();
 
-        RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
-                    total_path_length_);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "New path with %zu poses (L=%.2f m).", path_->poses.size(),
+                        total_path_length_);
+        }
     }
 
     // Cache the newest pose sample.
@@ -401,11 +424,13 @@ class N6dForceController : public rclcpp::Node {
 
         constexpr std::chrono::milliseconds kInfoThrottle{1000};
         const auto throttle_ms = kInfoThrottle.count();
-        RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), throttle_ms,
-            "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |F_b|=%.2f |M_b|=%.2f speed=%.2f m/s",
-            target_sample.segment_index, total_segments, target_sample.segment_t, s_target,
-            total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(), speed);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO_THROTTLE(
+                get_logger(), *get_clock(), throttle_ms,
+                "Segment %zu/%zu t=%.2f s=%.2f/%.2f |e_pos|=%.2f m |F_b|=%.2f |M_b|=%.2f speed=%.2f m/s",
+                target_sample.segment_index, total_segments, target_sample.segment_t, s_target,
+                total_path_length_, e_pos_w.length(), F_b.length(), M_b.length(), speed);
+        }
 
         publish_debug_outputs(target_pose, projected_pose, e_pos_w, e_rot, now_time);
 
@@ -725,8 +750,10 @@ class N6dForceController : public rclcpp::Node {
             path_summary_pub_->publish(msg);
         }
         const char* label = completed ? "completed" : "aborted";
-        RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
-                    last_s_robot_, total_path_length_, rms);
+        if (runtime_info_logs_enabled_) {
+            RCLCPP_INFO(get_logger(), "Path %s: %.2f / %.2f, RMS tracking error = %.3f", label,
+                        last_s_robot_, total_path_length_, rms);
+        }
         summary_logged_ = true;
         path_active_ = false;
     }
@@ -758,6 +785,7 @@ class N6dForceController : public rclcpp::Node {
     bool use_goal_orientation_{false};
     bool allow_in_place_rotation_{true};
     bool debug_enabled_{false};
+    bool runtime_info_logs_enabled_{true};
     std::string debug_speed_topic_{"/nav6d/force_controller/debug/linear_speed"};
     std::string debug_projected_pose_topic_{"/nav6d/force_controller/debug/path_projection"};
     std::string debug_target_pose_topic_{"/nav6d/force_controller/debug/carrot_pose"};
@@ -779,6 +807,7 @@ class N6dForceController : public rclcpp::Node {
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_projected_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr debug_target_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr debug_error_pub_;
+    OnSetParametersCallbackHandle::SharedPtr runtime_log_params_cb_handle_;
 
     // State
     std::optional<nav_msgs::msg::Path> path_;

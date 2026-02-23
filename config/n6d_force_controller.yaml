@@ -29,6 +29,7 @@ nav6d:
       max_velocity_mps: 0.8                    # Maximum allowed linear speed before braking (m/s)
       velocity_brake_gain: 3.5                 # Force gain applied when braking above max velocity
       debug_enabled: false                     # Enable verbose logs and debug publishers
+      runtime_info_logs_enabled: true          # Runtime INFO logs (not init/warn/error)
 
       # Linear (xyz) PD gains
       kp_linear: [13.8, 13.8, 13.8]               # Per-axis KP for xyz position errors

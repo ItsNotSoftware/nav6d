@@ -25,6 +25,7 @@ nav6d:
       path_end_tolerance: 0.001              # Arc length tolerance for "at end of path" (m)
       min_path_length: 0.05                  # Minimum path length before publishing summaries (m)
       debug_enabled: false                   # Disable verbose logs/debug publishers
+      runtime_info_logs_enabled: false        # Runtime INFO logs (not init/warn/error)
 
       # Linear (xyz) PD gains
       kp_linear: [5.8, 5.8, 5.8]
