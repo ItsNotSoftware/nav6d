@@ -2,23 +2,26 @@ nav6d:
   n6d_planner:
     ros__parameters:
       # Topics that provide the planning inputs and outputs.
-      map_topic: /octomap_full                 # Full 3D OctoMap (octomap_msgs/Octomap)
-      pose_topic: /space_cobot/pose            # Robot pose in the world frame (geometry_msgs/PoseStamped)
-      goal_topic: /nav6d/goal                  # Target pose to plan toward (geometry_msgs/PoseStamped)
-      path_topic: /nav6d/planner/path          # Generated waypoint path (nav_msgs/Path)
-      map_frame: world                         # TF frame in which path poses are expressed
+      map_topic: /octomap_full # Full 3D OctoMap (octomap_msgs/Octomap)
+      pose_topic: /space_cobot/pose # Robot pose in the world frame (geometry_msgs/PoseStamped)
+      goal_topic: /nav6d/goal # Target pose to plan toward (geometry_msgs/PoseStamped)
+      path_topic: /nav6d/planner/path # Generated waypoint path (nav_msgs/Path)
+      map_frame: world # TF frame in which path poses are expressed
 
       # Collision model and search limits.
-      robot_radius: 0.225                       # Radius (m) used to inflate obstacles during collision checks
-      occupancy_threshold: 0.5                 # Voxel occupancy probability treated as occupied
-      max_search_range: 25.0                   # Maximum straight-line distance (m) the planner will search
-      max_expansions: 60000                    # A* node expansion cap to avoid runaway searches
-      line_sample_step: 0.5                    # Spacing (m) used when testing straight-line feasibility
+      robot_radius: 0.225 # Radius (m) used to inflate obstacles during collision checks
+      occupancy_threshold: 0.5 # Voxel occupancy probability treated as occupied
+      max_search_range: 25.0 # Maximum straight-line distance (m) the planner will search
+      max_expansions: 60000 # A* node expansion cap to avoid runaway searches
+      line_sample_step: 0.5 # Spacing (m) used when testing straight-line feasibility
 
       # Orientation handling.
-      slerp_orientation: true                  # Interpolate orientation from start->goal via SLERP
+      slerp_orientation: true # Interpolate orientation from start->goal via SLERP
+      enable_trajectory_smoothing: true # Apply post-planning waypoint smoothing
+      smoothing_iterations: 3 # Number of smoothing passes over interior waypoints
+      smoothing_alpha: 0.4 # Per-pass blend toward local neighbor average [0..1]
 
       # Debug aids for RViz visualisation.
-      debug_markers: true                      # Publish path markers when true
-      marker_topic: /nav6d/planner/path_markers  # MarkerArray output topic
-      runtime_info_logs_enabled: false          # Runtime INFO logs (not init/warn/error)
+      debug_markers: true # Publish path markers when true
+      marker_topic: /nav6d/planner/path_markers # MarkerArray output topic
+      runtime_info_logs_enabled: true # Runtime INFO logs (not init/warn/error)

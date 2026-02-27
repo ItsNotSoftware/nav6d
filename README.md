@@ -167,6 +167,9 @@ Parameters are managed via the YAML configuration file.
 | `max_expansions`      | A* node expansion limit                   |
 | `line_sample_step`    | Step size for line feasibility checks (m) |
 | `slerp_orientation`   | SLERP interpolate start→goal orientation  |
+| `enable_trajectory_smoothing` | Post-process and smooth waypoint geometry |
+| `smoothing_iterations` | Number of smoothing passes (interior waypoints only) |
+| `smoothing_alpha` | Blend toward local waypoint average per pass `[0, 1]` |
 | `debug_markers`       | Enable RViz path visualization            |
 | `marker_topic`        | MarkerArray topic name                    |
 
@@ -207,6 +210,7 @@ Path quality parameters from `config/n6d_path_evaluator.yaml`:
 | `alpha`               | Clearance scale factor (T = alpha * radius) |
 | `occupancy_threshold` | Probability threshold for occupied voxels   |
 | `sample_step`         | Min spacing between sampled poses (m)       |
+| `mc_timing_logs_enabled` | Enable/disable Monte Carlo timing INFO logs |
 | `mc_particles_per_pose` | Number of particles sampled per path point |
 | `mc_sigma_xy` / `mc_sigma_z` | Position uncertainty std dev (m) in XY/Z |
 | `mc_sigma_clip`       | Clip particle noise to ±N sigma             |

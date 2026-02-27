@@ -84,6 +84,7 @@ private:
         sample_step_ = declare_parameter("sample_step", 0.25);
         min_path_length_ = declare_parameter("min_path_length", 0.05);
         runtime_info_logs_enabled_ = declare_parameter("runtime_info_logs_enabled", true);
+        mc_timing_logs_enabled_ = declare_parameter("mc_timing_logs_enabled", true);
 
         // Monte Carlo robustness estimator (used for msg.heuristic output).
         mc_particles_per_pose_ = std::max<int64_t>(1, declare_parameter("mc_particles_per_pose", 200));
@@ -112,6 +113,16 @@ private:
                     return result;
                 }
                 runtime_info_logs_enabled_ = p.as_bool();
+            }
+            else if (p.get_name() == "mc_timing_logs_enabled")
+            {
+                if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL)
+                {
+                    result.successful = false;
+                    result.reason = "mc_timing_logs_enabled must be bool";
+                    return result;
+                }
+                mc_timing_logs_enabled_ = p.as_bool();
             }
         }
         return result;
@@ -599,7 +610,7 @@ private:
             total_ms, sample_ms, mc_ms, mc_particles_per_pose_,
             samples.size() * static_cast<size_t>(std::max<int64_t>(0, mc_particles_per_pose_)));
 
-        if (runtime_info_logs_enabled_)
+        if (runtime_info_logs_enabled_ && mc_timing_logs_enabled_)
         {
             RCLCPP_INFO_THROTTLE(
                 get_logger(), *get_clock(), 1000,
@@ -620,6 +631,7 @@ private:
     double sample_step_{0.25};
     double min_path_length_{0.05};
     bool runtime_info_logs_enabled_{true};
+    bool mc_timing_logs_enabled_{true};
     int64_t mc_particles_per_pose_{200};
     double mc_sigma_xy_{0.08};
     double mc_sigma_z_{0.05};

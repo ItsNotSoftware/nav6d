@@ -105,6 +105,11 @@ class N6dPlanner : public rclcpp::Node {
         max_expansions_ = declare_parameter("max_expansions", 60000);
         line_sample_step_ = declare_parameter("line_sample_step", 0.25);
         slerp_orientation_ = declare_parameter("slerp_orientation", false);
+        enable_trajectory_smoothing_ = declare_parameter("enable_trajectory_smoothing", true);
+        const std::int64_t smoothing_iterations_param =
+            declare_parameter<std::int64_t>("smoothing_iterations", 2);
+        smoothing_iterations_ = static_cast<int>(std::max<std::int64_t>(1, smoothing_iterations_param));
+        smoothing_alpha_ = std::clamp(declare_parameter("smoothing_alpha", 0.35), 0.0, 1.0);
         debug_markers_ = declare_parameter("debug_markers", true);
         marker_topic_ =
             declare_parameter<std::string>("marker_topic", "/nav6d/planner/path_markers");
@@ -325,6 +330,7 @@ class N6dPlanner : public rclcpp::Node {
         if (is_line_free(start_c, goal_c)) {
             path_out =
                 create_straight_path(start_c, goal_c, start_exact, goal_exact, start_q, goal_q);
+            apply_trajectory_smoothing(path_out, start_q, goal_q);
             return true;
         }
 
@@ -334,7 +340,52 @@ class N6dPlanner : public rclcpp::Node {
             return false;
         }
         path_out = keys_to_path(key_path, start_exact, goal_exact, start_q, goal_q);
+        apply_trajectory_smoothing(path_out, start_q, goal_q);
         return true;
+    }
+
+    void apply_trajectory_smoothing(nav_msgs::msg::Path& path,
+                                    const geometry_msgs::msg::Quaternion& start_q,
+                                    const geometry_msgs::msg::Quaternion& goal_q) {
+        if (!enable_trajectory_smoothing_ || path.poses.size() < 3) return;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        std::vector<octomap::point3d> coords;
+        coords.reserve(path.poses.size());
+        for (const auto& ps : path.poses) {
+            coords.emplace_back(static_cast<float>(ps.pose.position.x),
+                                static_cast<float>(ps.pose.position.y),
+                                static_cast<float>(ps.pose.position.z));
+        }
+
+        for (int iter = 0; iter < smoothing_iterations_; ++iter) {
+            auto next_coords = coords;
+            for (std::size_t i = 1; i + 1 < coords.size(); ++i) {
+                const octomap::point3d avg = (coords[i - 1] + coords[i + 1]) * 0.5F;
+                const octomap::point3d candidate =
+                    coords[i] + (avg - coords[i]) * static_cast<float>(smoothing_alpha_);
+
+                if (!is_collision_free(candidate)) continue;
+                if (!is_line_free(next_coords[i - 1], candidate)) continue;
+                if (!is_line_free(candidate, coords[i + 1])) continue;
+                next_coords[i] = candidate;
+            }
+            coords.swap(next_coords);
+        }
+
+        for (std::size_t i = 0; i < coords.size(); ++i) {
+            path.poses[i].pose.position.x = coords[i].x();
+            path.poses[i].pose.position.y = coords[i].y();
+            path.poses[i].pose.position.z = coords[i].z();
+            path.poses[i].pose.orientation = orientation_for_path(coords, i, start_q, goal_q);
+        }
+
+        if (runtime_info_logs_enabled_) {
+            const auto t1 = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            RCLCPP_INFO(get_logger(), "Trajectory smoothing time: %.3f ms (%zu poses, %d iters).",
+                        ms, path.poses.size(), smoothing_iterations_);
+        }
     }
 
     // OctoMap A* expansion using 26-connected voxel moves and a Euclidean heuristic. start_key /
@@ -820,6 +871,9 @@ class N6dPlanner : public rclcpp::Node {
     double line_sample_step_{0.25};    // Step size (m) for straight-line feasibility tests.
     std::string map_frame_{"map"};     // Output frame id.
     bool slerp_orientation_{false};    // Interpolate orientation with SLERP when true.
+    bool enable_trajectory_smoothing_{true};  // Run lightweight post-processing smoother.
+    int smoothing_iterations_{2};            // Iterations for path smoothing pass.
+    double smoothing_alpha_{0.35};           // Blend factor per smoothing iteration.
     bool debug_markers_{false};        // Whether to publish RViz markers.
     bool runtime_info_logs_enabled_{true};  // Runtime INFO logging (not startup/warn/error).
     std::string marker_topic_;         // MarkerArray output topic.
