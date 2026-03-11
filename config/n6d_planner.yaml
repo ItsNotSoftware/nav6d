@@ -17,9 +17,10 @@ nav6d:
 
       # Orientation handling.
       slerp_orientation: true # Interpolate orientation from start->goal via SLERP
-      enable_trajectory_smoothing: true # Apply post-planning waypoint smoothing
-      smoothing_iterations: 3 # Number of smoothing passes over interior waypoints
-      smoothing_alpha: 0.4 # Per-pass blend toward local neighbor average [0..1]
+      enable_trajectory_smoothing: true # Apply spline smoothing to planned paths
+      smoothing_iterations: 3 # Laplacian pre-smoothing passes to reposition control points
+      smoothing_alpha: 0.4 # Laplacian blend factor per pass [0..1]
+      smoothing_points_per_segment: 8 # Catmull-Rom interpolated points per segment
 
       # Debug aids for RViz visualisation.
       debug_markers: true # Publish path markers when true
