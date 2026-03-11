@@ -167,9 +167,10 @@ Parameters are managed via the YAML configuration file.
 | `max_expansions`      | A* node expansion limit                   |
 | `line_sample_step`    | Step size for line feasibility checks (m) |
 | `slerp_orientation`   | SLERP interpolate start→goal orientation  |
-| `enable_trajectory_smoothing` | Post-process and smooth waypoint geometry |
-| `smoothing_iterations` | Number of smoothing passes (interior waypoints only) |
-| `smoothing_alpha` | Blend toward local waypoint average per pass `[0, 1]` |
+| `enable_trajectory_smoothing` | Apply spline smoothing to planned paths |
+| `smoothing_iterations` | Laplacian pre-smoothing passes to reposition A* control points |
+| `smoothing_alpha` | Laplacian blend factor per pass `[0, 1]` |
+| `smoothing_points_per_segment` | Catmull-Rom interpolated points per segment |
 | `debug_markers`       | Enable RViz path visualization            |
 | `marker_topic`        | MarkerArray topic name                    |
 
